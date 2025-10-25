@@ -1,326 +1,338 @@
 /*
- * ILI9341 Serial Display Controller for MCUFRIEND Shields
- * Receives data from serial port and displays on ILI9341 2.4" or 2.8" TFT Shield
- * For Arduino Uno R3
+ * ILI9341 Serial Display Controller - BALANCED MEMORY VERSION
+ * Fixes text wrapping with moderate feature set
+ * Optimized for Arduino Uno R3 (under 2KB RAM)
  */
 
-#include <Adafruit_GFX.h>    // Core graphics library
-#include <MCUFRIEND_kbv.h>   // Library for TFT shields
+#include <Adafruit_GFX.h>
+#include <MCUFRIEND_kbv.h>
 
-// Create display object (no pins needed for shields)
 MCUFRIEND_kbv tft;
 
-// Display settings
-int screenWidth = 240;
-int screenHeight = 320;
-#define TEXT_SIZE 2
-#define TEXT_COLOR TFT_WHITE
-#define BG_COLOR TFT_BLACK
+// Display constants
+#define BASE_CHAR_W 6
+#define BASE_CHAR_H 8
 
-// Track current text color separately
-uint16_t currentTextColor = TEXT_COLOR;
+// Current state
+uint16_t screenW = 240;
+uint16_t screenH = 320;
+uint16_t textColor = 0xFFFF; // White
+uint8_t textSize = 2;
+uint16_t posX = 0;
+uint16_t posY = 0;
 
-// Text positioning
-int cursorX = 0;
-int cursorY = 0;
-int lineHeight = 16; // Height of text line with size 2
-
-// Serial communication settings
-String inputString = "";
-boolean stringComplete = false;
+// Serial handling - optimized
+String cmd = "";
+bool cmdReady = false;
 
 void setup() {
-  // Initialize serial communication
   Serial.begin(9600);
-  Serial.println("ILI9341 Serial Display Ready");
+  Serial.println(F("ILI9341 Ready"));
   
-  // Initialize display
   uint16_t ID = tft.readID();
-  if (ID == 0xD3D3 || ID == 0x00D3) ID = 0x9341; // Force ILI9341 for write-only shields
+  if (ID == 0xD3D3 || ID == 0x00D3) ID = 0x9341;
   tft.begin(ID);
-  tft.setRotation(0); // Start with portrait
-  updateScreenDimensions(); // Set initial dimensions
-  tft.fillScreen(BG_COLOR);
-  tft.setTextColor(currentTextColor);
-  tft.setTextSize(TEXT_SIZE);
-  tft.setCursor(0, 0);
+  tft.setRotation(0);
+  tft.fillScreen(0);
+  tft.setTextColor(textColor);
+  tft.setTextSize(textSize);
   
-  // Display startup message
-  tft.println("Serial Display");
-  tft.println("Ready...");
-  cursorY = 32;
+  tft.println(F("Serial Display"));
+  tft.println(F("Ver. 1.0"));
+  tft.println(F("Ready..."));
+  posY = tft.getCursorY();
   
-  // Reserve space for input string
-  inputString.reserve(200);
+  cmd.reserve(100); // Reduced from 200
 }
 
 void loop() {
-  // Process serial data when complete command is received
-  if (stringComplete) {
-    processCommand(inputString);
-    inputString = "";
-    stringComplete = false;
+  if (cmdReady) {
+    processCmd(cmd);
+    cmd = "";
+    cmdReady = false;
   }
 }
 
-// Serial event handler - runs between loop() calls
 void serialEvent() {
   while (Serial.available()) {
-    char inChar = (char)Serial.read();
-    
-    // Check for newline (end of command)
-    if (inChar == '\n') {
-      stringComplete = true;
-    } else {
-      // Add character to input string
-      inputString += inChar;
+    char c = (char)Serial.read();
+    if (c == '\n') {
+      cmdReady = true;
+    } else if (c != '\r') {
+      cmd += c;
     }
   }
 }
 
-// Process commands received via serial
-void processCommand(String command) {
-  command.trim(); // Remove any whitespace
+// Calculate lines for text
+uint8_t getLines(const String& txt) {
+  uint8_t len = txt.length();
+  if (len == 0) return 1;
+  uint8_t charsPerLine = screenW / (BASE_CHAR_W * textSize);
+  return (len + charsPerLine - 1) / charsPerLine;
+}
+
+// Display text with wrapping fix
+void showText(const String& txt) {
+  uint8_t lines = getLines(txt);
+  uint16_t lineH = BASE_CHAR_H * textSize;
+  uint16_t needH = lines * lineH;
   
-  // Check for special commands (prefixed with #)
-  if (command.startsWith("#")) {
-    handleSpecialCommand(command);
+  // Clear if needed
+  if (posY + needH > screenH) {
+    tft.fillScreen(0);
+    posY = 0;
+  }
+  
+  tft.setCursor(posX, posY);
+  
+  // For long text, print in chunks
+  uint8_t charsPerLine = screenW / (BASE_CHAR_W * textSize);
+  if (txt.length() > charsPerLine) {
+    int start = 0;
+    while (start < txt.length()) {
+      int end = min(start + charsPerLine, (int)txt.length());
+      tft.print(txt.substring(start, end));
+      start = end;
+      if (start < txt.length()) {
+        posY += lineH;
+        tft.setCursor(0, posY);
+      }
+    }
+    tft.println();
   } else {
-    // Regular text - display it
-    displayText(command);
+    tft.println(txt);
   }
+  
+  posY = tft.getCursorY();
+  posX = 0;
+  
+  Serial.print(lines);
+  Serial.print(F("L: "));
+  Serial.println(txt);
 }
 
-// Handle special commands
-void handleSpecialCommand(String cmd) {
-  cmd.toUpperCase(); // Make case-insensitive
+// Process commands
+void processCmd(String c) {
+  c.trim();
   
-  if (cmd == "#CLEAR" || cmd == "#CLR") {
-    // Clear screen
-    tft.fillScreen(BG_COLOR);
-    cursorX = 0;
-    cursorY = 0;
-    Serial.println("Screen cleared");
+  if (c.startsWith("#")) {
+    c.toUpperCase();
     
-  } else if (cmd.startsWith("#COLOR ")) {
-    // Change text color: #COLOR RED, #COLOR GREEN, etc.
-    String color = cmd.substring(7);
-    setTextColor(color);
+    if (c == "#CLEAR" || c == "#CLR") {
+      tft.fillScreen(0);
+      posX = posY = 0;
+      Serial.println(F("CLR"));
+      
+    } else if (c.startsWith("#COLOR ")) {
+      String col = c.substring(7);
+      setCol(col);
+      
+    } else if (c.startsWith("#SIZE ")) {
+      int s = c.substring(6).toInt();
+      if (s >= 1 && s <= 5) {
+        textSize = s;
+        tft.setTextSize(s);
+        Serial.print(F("Size:"));
+        Serial.println(s);
+      }
+      
+    } else if (c.startsWith("#POS ")) {
+      int sp = c.indexOf(' ', 5);
+      if (sp > 0) {
+        posX = c.substring(5, sp).toInt();
+        posY = c.substring(sp + 1).toInt();
+        tft.setCursor(posX, posY);
+        Serial.println(F("Pos"));
+      }
+      
+    } else if (c == "#INFO") {
+      Serial.print(F("Res:"));
+      Serial.print(screenW);
+      Serial.print('x');
+      Serial.println(screenH);
+      Serial.print(F("Pos:"));
+      Serial.print(posX);
+      Serial.print(',');
+      Serial.println(posY);
+      Serial.print(F("Sz:"));
+      Serial.println(textSize);
+      Serial.print(F("Ch/Ln:"));
+      Serial.println(screenW/(BASE_CHAR_W*textSize));
+      
+    } else if (c.startsWith("#RECT ")) {
+      parseRect(c.substring(6));
+      
+    } else if (c.startsWith("#CIRCLE ")) {
+      parseCirc(c.substring(8));
+      
+    } else if (c.startsWith("#LINE ")) {
+      parseLine(c.substring(6));
+      
+    } else if (c.startsWith("#FILL ")) {
+      parseFill(c.substring(6));
+      
+    } else if (c.startsWith("#ROT")) {
+      int r = c.substring(4).toInt();
+      if (r >= 0 && r <= 3) {
+        tft.setRotation(r);
+        screenW = tft.width();
+        screenH = tft.height();
+        tft.fillScreen(0);
+        posX = posY = 0;
+        Serial.print(F("Rot:"));
+        Serial.println(r);
+      }
+      
+    } else if (c.startsWith("#PROG ")) {
+      parseProg(c.substring(6));
+      
+    } else if (c == "#TEST") {
+      testWrap();
+      
+    } else if (c == "#HELP") {
+      help();
+      
+    } else if (c == "#ID") {
+      Serial.println("COM LCD");
+      
+    } 
     
-  } else if (cmd.startsWith("#SIZE ")) {
-    // Change text size: #SIZE 1, #SIZE 2, #SIZE 3
-    int size = cmd.substring(6).toInt();
-    if (size >= 1 && size <= 5) {
-      tft.setTextSize(size);
-      lineHeight = 8 * size; // Adjust line height
-      Serial.println("Text size: " + String(size));
+      else {
+      Serial.println(F("?"));
     }
-    
-  } else if (cmd.startsWith("#POS ")) {
-    // Set cursor position: #POS X Y
-    int spaceIndex = cmd.indexOf(' ', 5);
-    if (spaceIndex > 0) {
-      int x = cmd.substring(5, spaceIndex).toInt();
-      int y = cmd.substring(spaceIndex + 1).toInt();
-      cursorX = x;
-      cursorY = y;
-      tft.setCursor(cursorX, cursorY);
-      Serial.println("Position: " + String(x) + "," + String(y));
-    }
-    
-  } else if (cmd == "#INFO") {
-    // Display info
-    Serial.println("ILI9341 Display Info:");
-    Serial.println("Resolution: " + String(screenWidth) + "x" + String(screenHeight));
-    Serial.println("Current pos: " + String(cursorX) + "," + String(cursorY));
-    
-  } else if (cmd.startsWith("#RECT ")) {
-    // Draw rectangle: #RECT X Y W H
-    parseAndDrawRect(cmd.substring(6));
-    
-  } else if (cmd.startsWith("#CIRCLE ")) {
-    // Draw circle: #CIRCLE X Y R
-    parseAndDrawCircle(cmd.substring(8));
-    
-  } else if (cmd.startsWith("#LINE ")) {
-    // Draw line: #LINE X1 Y1 X2 Y2
-    parseAndDrawLine(cmd.substring(6));
-    
-  } else if (cmd.startsWith("#ROTATION ")) {
-    // Set rotation: #ROTATION 0-3
-    int rot = cmd.substring(10).toInt();
-    if (rot >= 0 && rot <= 3) {
-      tft.setRotation(rot);
-      updateScreenDimensions();
-      tft.fillScreen(BG_COLOR);
-      cursorX = 0;
-      cursorY = 0;
-      tft.setCursor(cursorX, cursorY);
-      Serial.println("Rotation set to: " + String(rot));
-    }
-  } else if (cmd.startsWith("#SCROLL ")) {
-    // Scroll screen: #SCROLL <pixels> (positive for down)
-    int pixels = cmd.substring(8).toInt();
-    tft.vertScroll(0, screenHeight, pixels);
-    cursorY -= pixels;  // Adjust cursor if needed
-    Serial.println("Scrolled by: " + String(pixels));
-    
-  } else if (cmd.startsWith("#PROGRESS ")) {
-    // Draw progress bar: #PROGRESS X Y W H PERCENT
-    parseAndDrawProgress(cmd.substring(10));
-   
-    
-  } else if (cmd == "#HELP") {
-    printHelp();
-  }
-   else {
-    Serial.println("Unknown command: " + cmd);
+  } else {
+    showText(c);
   }
 }
 
-// Display text on screen
-void displayText(String text) {
-  // Check if we need to wrap to next line
-  if (cursorY + lineHeight > screenHeight) {
-    // Scroll up by clearing and starting from top
-    tft.fillScreen(BG_COLOR);
-    cursorY = 0;
-  }
+// Color setting
+void setCol(String& n) {
+  uint16_t c = textColor;
   
-  tft.setCursor(cursorX, cursorY);
-  tft.println(text);
+  if (n == "RED") c = 0xF800;
+  else if (n == "GREEN") c = 0x07E0;
+  else if (n == "BLUE") c = 0x001F;
+  else if (n == "YELLOW") c = 0xFFE0;
+  else if (n == "CYAN") c = 0x07FF;
+  else if (n == "MAGENTA") c = 0xF81F;
+  else if (n == "WHITE") c = 0xFFFF;
+  else if (n == "BLACK") c = 0x0000;
+  else if (n == "ORANGE") c = 0xFD20;
+  else if (n == "PINK") c = 0xF81F;
   
-  // Update cursor position for next line
-  cursorX = 0;
-  cursorY += lineHeight;
-  
-  // Echo back to serial
-  Serial.println("Displayed: " + text);
+  textColor = c;
+  tft.setTextColor(c);
+  Serial.print(F("Col:"));
+  Serial.println(n);
 }
 
-// Set text color based on color name
-void setTextColor(String colorName) {
-  uint16_t color = currentTextColor;
-  
-  colorName.toUpperCase(); // Ensure case-insensitive
-  
-  if (colorName == "RED") color = TFT_RED;
-  else if (colorName == "GREEN") color = TFT_GREEN;
-  else if (colorName == "BLUE") color = TFT_BLUE;
-  else if (colorName == "YELLOW") color = TFT_YELLOW;
-  else if (colorName == "CYAN") color = TFT_CYAN;
-  else if (colorName == "MAGENTA") color = TFT_MAGENTA;
-  else if (colorName == "WHITE") color = TFT_WHITE;
-  else if (colorName == "BLACK") color = TFT_BLACK;
-  else if (colorName == "ORANGE") color = TFT_ORANGE;
-  else if (colorName == "PINK") color = TFT_PINK; // Use library define if available, or 0xF81F
-  
-  tft.setTextColor(color);
-  currentTextColor = color;
-  Serial.println("Color set to: " + colorName);
-}
-
-// Parse and draw rectangle
-void parseAndDrawRect(String params) {
-  int vals[4];
-  int idx = 0;
-  int lastSpace = -1;
-  
-  for (int i = 0; i <= params.length() && idx < 4; i++) {
-    if (i == params.length() || params[i] == ' ') {
-      vals[idx++] = params.substring(lastSpace + 1, i).toInt();
-      lastSpace = i;
+// Shape parsing - compact
+void parseRect(String p) {
+  int v[4], i = 0, last = -1;
+  for (int j = 0; j <= p.length() && i < 4; j++) {
+    if (j == p.length() || p[j] == ' ') {
+      v[i++] = p.substring(last + 1, j).toInt();
+      last = j;
     }
   }
-  
-  if (idx == 4) {
-    tft.drawRect(vals[0], vals[1], vals[2], vals[3], currentTextColor);
-    Serial.println("Rectangle drawn");
+  if (i == 4) {
+    tft.drawRect(v[0], v[1], v[2], v[3], textColor);
+    Serial.println(F("Rect"));
   }
 }
 
-// Parse and draw circle
-void parseAndDrawCircle(String params) {
-  int vals[3];
-  int idx = 0;
-  int lastSpace = -1;
-  
-  for (int i = 0; i <= params.length() && idx < 3; i++) {
-    if (i == params.length() || params[i] == ' ') {
-      vals[idx++] = params.substring(lastSpace + 1, i).toInt();
-      lastSpace = i;
+void parseFill(String p) {
+  int v[4], i = 0, last = -1;
+  for (int j = 0; j <= p.length() && i < 4; j++) {
+    if (j == p.length() || p[j] == ' ') {
+      v[i++] = p.substring(last + 1, j).toInt();
+      last = j;
     }
   }
-  
-  if (idx == 3) {
-    tft.drawCircle(vals[0], vals[1], vals[2], currentTextColor);
-    Serial.println("Circle drawn");
+  if (i == 4) {
+    tft.fillRect(v[0], v[1], v[2], v[3], textColor);
+    Serial.println(F("Fill"));
   }
 }
 
-// Parse and draw line
-void parseAndDrawLine(String params) {
-  int vals[4];
-  int idx = 0;
-  int lastSpace = -1;
-  
-  for (int i = 0; i <= params.length() && idx < 4; i++) {
-    if (i == params.length() || params[i] == ' ') {
-      vals[idx++] = params.substring(lastSpace + 1, i).toInt();
-      lastSpace = i;
+void parseCirc(String p) {
+  int v[3], i = 0, last = -1;
+  for (int j = 0; j <= p.length() && i < 3; j++) {
+    if (j == p.length() || p[j] == ' ') {
+      v[i++] = p.substring(last + 1, j).toInt();
+      last = j;
     }
   }
-  
-  if (idx == 4) {
-    tft.drawLine(vals[0], vals[1], vals[2], vals[3], currentTextColor);
-    Serial.println("Line drawn");
+  if (i == 3) {
+    tft.drawCircle(v[0], v[1], v[2], textColor);
+    Serial.println(F("Circ"));
   }
 }
 
-// Parse and draw progress bar
-void parseAndDrawProgress(String params) {
-  int vals[5];
-  int idx = 0;
-  int lastSpace = -1;
-  
-  for (int i = 0; i <= params.length() && idx < 5; i++) {
-    if (i == params.length() || params[i] == ' ') {
-      vals[idx++] = params.substring(lastSpace + 1, i).toInt();
-      lastSpace = i;
+void parseLine(String p) {
+  int v[4], i = 0, last = -1;
+  for (int j = 0; j <= p.length() && i < 4; j++) {
+    if (j == p.length() || p[j] == ' ') {
+      v[i++] = p.substring(last + 1, j).toInt();
+      last = j;
     }
   }
-  
-  if (idx == 5) {
-    int percent = constrain(vals[4], 0, 100);
-    int fillW = (vals[2] * percent) / 100;
-    tft.fillRect(vals[0], vals[1], fillW, vals[3], currentTextColor);
-    // Optional: Draw outline
-    tft.drawRect(vals[0], vals[1], vals[2], vals[3], currentTextColor);
-    Serial.println("Progress bar at " + String(percent) + "%");
+  if (i == 4) {
+    tft.drawLine(v[0], v[1], v[2], v[3], textColor);
+    Serial.println(F("Line"));
   }
 }
-// Update screen dimensions based on current rotation
-void updateScreenDimensions() {
-  screenWidth = tft.width();
-  screenHeight = tft.height();
+
+void parseProg(String p) {
+  int v[5], i = 0, last = -1;
+  for (int j = 0; j <= p.length() && i < 5; j++) {
+    if (j == p.length() || p[j] == ' ') {
+      v[i++] = p.substring(last + 1, j).toInt();
+      last = j;
+    }
+  }
+  if (i == 5) {
+    int pct = constrain(v[4], 0, 100);
+    int fw = (v[2] * pct) / 100;
+    tft.drawRect(v[0], v[1], v[2], v[3], textColor);
+    if (fw > 2) {
+      tft.fillRect(v[0]+1, v[1]+1, fw-2, v[3]-2, textColor);
+    }
+    Serial.print(pct);
+    Serial.println(F("%"));
+  }
 }
 
-// Print help information
-void printHelp() {
-  Serial.println("=== ILI9341 Serial Display Commands ===");
-  Serial.println("Text: Just type text and press Enter");
-  Serial.println("Commands (start with #):");
-  Serial.println("  #CLEAR or #CLR - Clear screen");
-  Serial.println("  #COLOR <name> - Set text color");
-  Serial.println("    Colors: RED, GREEN, BLUE, YELLOW, CYAN,");
-  Serial.println("            MAGENTA, WHITE, BLACK, ORANGE, PINK");
-  Serial.println("  #SIZE <1-5> - Set text size");
-  Serial.println("  #POS <x> <y> - Set cursor position");
-  Serial.println("  #RECT <x> <y> <w> <h> - Draw rectangle");
-  Serial.println("  #CIRCLE <x> <y> <radius> - Draw circle");
-  Serial.println("  #LINE <x1> <y1> <x2> <y2> - Draw line");
-  Serial.println("  #ROTATION <0-3> - Set display rotation (0=portrait, 1=landscape, etc.)");
-  Serial.println("  #INFO - Display current settings");
-  Serial.println("  #HELP - Show this help");
-  Serial.println("=======================================");
+// Test wrapping
+void testWrap() {
+  Serial.println(F("Test..."));
+  showText("Short");
+  delay(500);
+  showText("Medium length text here");
+  delay(500);
+  showText("This is a very long text that will wrap to multiple lines and test our wrapping fix");
+  delay(500);
+  showText("After wrap");
+  Serial.println(F("Done"));
+}
+
+// Help - compact
+void help() {
+  Serial.println(F("== LCD Commands =="));
+  Serial.println(F("Text: type & enter"));
+  Serial.println(F("#CLR - Clear"));
+  Serial.println(F("#COLOR <name>"));
+  Serial.println(F("#SIZE <1-5>"));
+  Serial.println(F("#POS <x> <y>"));
+  Serial.println(F("#RECT <x y w h>"));
+  Serial.println(F("#FILL <x y w h>"));
+  Serial.println(F("#CIRCLE <x y r>"));
+  Serial.println(F("#LINE <x1 y1 x2 y2>"));
+  Serial.println(F("#PROG <x y w h %>"));
+  Serial.println(F("#ROT <0-3>"));
+  Serial.println(F("#TEST - Test wrap"));
+  Serial.println(F("#INFO - Settings"));
+  Serial.println(F("#ID - Returns ID COM LCD"));//ID
+
 }
