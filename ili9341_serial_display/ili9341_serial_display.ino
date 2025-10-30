@@ -193,12 +193,12 @@ void processCmd(String c) {
     } else if (c == "#HELP") {
       help();
       
+
     } else if (c == "#ID") {
       Serial.println("COM LCD");
       
-    } 
-    
-      else {
+    }  else {
+
       Serial.println(F("?"));
     }
   } else {
@@ -333,6 +333,8 @@ void help() {
   Serial.println(F("#ROT <0-3>"));
   Serial.println(F("#TEST - Test wrap"));
   Serial.println(F("#INFO - Settings"));
+
   Serial.println(F("#ID - Returns ID COM LCD"));//ID
+
 
 }
