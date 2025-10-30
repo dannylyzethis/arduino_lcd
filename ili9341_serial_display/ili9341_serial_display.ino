@@ -17,6 +17,8 @@ MCUFRIEND_kbv tft;
 uint16_t screenW = 240;
 uint16_t screenH = 320;
 uint16_t textColor = 0xFFFF; // White
+uint16_t bgColor = 0x0000;   // Black (default, but not used initially)
+bool opaqueText = false;
 uint8_t textSize = 2;
 uint16_t posX = 0;
 uint16_t posY = 0;
@@ -34,8 +36,8 @@ void setup() {
   tft.begin(ID);
   tft.setRotation(0);
   tft.fillScreen(0);
-  tft.setTextColor(textColor);
   tft.setTextSize(textSize);
+  updateTextColors();
   
   tft.println(F("Serial Display"));
   tft.println(F("Ver. 1.0"));
@@ -128,6 +130,10 @@ void processCmd(String c) {
       String col = c.substring(7);
       setCol(col);
       
+    } else if (c.startsWith("#BGCOLOR ")) {
+      String col = c.substring(9);
+      setBgCol(col);
+      
     } else if (c.startsWith("#SIZE ")) {
       int s = c.substring(6).toInt();
       if (s >= 1 && s <= 5) {
@@ -159,6 +165,13 @@ void processCmd(String c) {
       Serial.println(textSize);
       Serial.print(F("Ch/Ln:"));
       Serial.println(screenW/(BASE_CHAR_W*textSize));
+      Serial.print(F("Bg:"));
+      if (opaqueText) {
+        Serial.print(F("0x"));
+        Serial.println(bgColor, HEX);
+      } else {
+        Serial.println(F("None"));
+      }
       
     } else if (c.startsWith("#RECT ")) {
       parseRect(c.substring(6));
@@ -206,25 +219,60 @@ void processCmd(String c) {
   }
 }
 
+// Update text colors based on current state
+void updateTextColors() {
+  if (opaqueText) {
+    tft.setTextColor(textColor, bgColor);
+  } else {
+    tft.setTextColor(textColor);
+  }
+}
+
 // Color setting
 void setCol(String& n) {
-  uint16_t c = textColor;
-  
-  if (n == "RED") c = 0xF800;
-  else if (n == "GREEN") c = 0x07E0;
-  else if (n == "BLUE") c = 0x001F;
-  else if (n == "YELLOW") c = 0xFFE0;
-  else if (n == "CYAN") c = 0x07FF;
-  else if (n == "MAGENTA") c = 0xF81F;
-  else if (n == "WHITE") c = 0xFFFF;
-  else if (n == "BLACK") c = 0x0000;
-  else if (n == "ORANGE") c = 0xFD20;
-  else if (n == "PINK") c = 0xF81F;
-  
-  textColor = c;
-  tft.setTextColor(c);
-  Serial.print(F("Col:"));
-  Serial.println(n);
+  n.toUpperCase();
+  uint16_t c = getColorFromName(n);
+  if (c != 0xFFFF || n == "WHITE") { // 0xFFFF is white, but check if valid name
+    textColor = c;
+    updateTextColors();
+    Serial.print(F("Col:"));
+    Serial.println(n);
+  }
+}
+
+// Background color setting
+void setBgCol(String& n) {
+  n.trim();
+  n.toUpperCase();
+  if (n == "NONE") {
+    opaqueText = false;
+    updateTextColors();
+    Serial.println(F("Bg:None"));
+    return;
+  }
+  uint16_t c = getColorFromName(n);
+  if (c != 0xFFFF || n == "WHITE") { // Similar check
+    bgColor = c;
+    opaqueText = true;
+    updateTextColors();
+    Serial.print(F("BgCol:"));
+    Serial.println(n);
+  }
+}
+
+// Get color from name
+uint16_t getColorFromName(String& n) {
+  if (n == "RED") return 0xF800;
+  else if (n == "GREEN") return 0x07E0;
+  else if (n == "BLUE") return 0x001F;
+  else if (n == "YELLOW") return 0xFFE0;
+  else if (n == "CYAN") return 0x07FF;
+  else if (n == "MAGENTA") return 0xF81F;
+  else if (n == "WHITE") return 0xFFFF;
+  else if (n == "BLACK") return 0x0000;
+  else if (n == "ORANGE") return 0xFD20;
+  else if (n == "PINK") return 0xF81F;
+  return 0xFFFF; // Default to white if invalid, but could ignore
 }
 
 // Shape parsing - compact
@@ -323,6 +371,7 @@ void help() {
   Serial.println(F("Text: type & enter"));
   Serial.println(F("#CLR - Clear"));
   Serial.println(F("#COLOR <name>"));
+  Serial.println(F("#BGCOLOR <name|NONE>"));
   Serial.println(F("#SIZE <1-5>"));
   Serial.println(F("#POS <x> <y>"));
   Serial.println(F("#RECT <x y w h>"));
