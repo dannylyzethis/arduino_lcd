@@ -38,7 +38,10 @@ void setup() {
   tft.setTextSize(textSize);
   
   tft.println(F("Serial Display"));
+<<<<<<< HEAD
   tft.println(F("Ver. 1.0"));
+=======
+>>>>>>> 2cd600053ed1028399e10755b41ea886341560df
   tft.println(F("Ready..."));
   posY = tft.getCursorY();
   
@@ -193,12 +196,16 @@ void processCmd(String c) {
     } else if (c == "#HELP") {
       help();
       
+<<<<<<< HEAD
     } else if (c == "#ID") {
       Serial.println("COM LCD");
       
     } 
     
       else {
+=======
+    } else {
+>>>>>>> 2cd600053ed1028399e10755b41ea886341560df
       Serial.println(F("?"));
     }
   } else {
@@ -333,6 +340,9 @@ void help() {
   Serial.println(F("#ROT <0-3>"));
   Serial.println(F("#TEST - Test wrap"));
   Serial.println(F("#INFO - Settings"));
+<<<<<<< HEAD
   Serial.println(F("#ID - Returns ID COM LCD"));//ID
 
+=======
+>>>>>>> 2cd600053ed1028399e10755b41ea886341560df
 }
