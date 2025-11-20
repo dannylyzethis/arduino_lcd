@@ -105,14 +105,17 @@ The Arduino LCD system operates in two modes:
 - FPGA output automatically displays on LCD bottom section
 - Full command set available (#CLR, #COLOR, #FPGASEND, etc.)
 
-### Bypass Mode (Transparent Pass-Through)
-- Direct USB ↔ FPGA communication
-- Arduino acts as transparent bridge
-- LCD shows conversation (> for USB→FPGA, < for FPGA→USB)
-- Useful for direct FPGA debugging/programming
+### Bypass Mode (100% Transparent Pass-Through)
+- Direct USB ↔ FPGA communication with ZERO processing
+- Raw byte forwarding in both directions
+- Arduino becomes completely invisible bridge
+- No formatting, no buffering, no LCD updates during operation
+- Perfect for FPGA programming, direct debugging, or any external device
+- Works with binary protocols, not just text
 
 **Enter bypass mode:** Send `#BYPASS` command
-**Exit bypass mode:** Send `###` (three hash symbols)
+**Exit bypass mode:** Send `###` (three hash symbols within 500ms)
+**Note:** The ### escape sequence is the ONLY processing done in bypass mode
 
 ## Command Protocol
 
@@ -182,14 +185,23 @@ end process;
 6. LCD bottom section should display: `PONG`
 7. FPGA can send status by pulsing `send_status` signal
 
-**Bypass Mode (Direct FPGA Access):**
+**Bypass Mode (100% Transparent - Direct FPGA/Device Access):**
 1. From Serial Monitor, send: `#BYPASS`
-2. Arduino responds: `[BYPASS MODE ACTIVE]`
-3. Now you're talking directly to FPGA
+2. Arduino responds: `[BYPASS MODE ACTIVE]` then goes silent
+3. Now you're talking DIRECTLY to FPGA with zero Arduino interference
 4. Send: `PING`
-5. FPGA responds: `PONG` (visible in Serial Monitor AND LCD)
-6. LCD shows: `>PING` (sent) and `<PONG` (received)
-7. To exit, send: `###`
+5. FPGA responds: `PONG` (visible ONLY in Serial Monitor, raw bytes)
+6. LCD shows static message: "Transparent Mode" (no updates during operation)
+7. All bytes pass through transparently - text, binary, any protocol
+8. To exit, send: `###`
+9. Arduino responds: `[EXIT BYPASS MODE]` and returns to normal mode
+
+**Use cases for bypass mode:**
+- FPGA firmware upload
+- Direct UART communication with any device
+- Binary protocol testing
+- Maximum performance (zero Arduino overhead)
+- Connecting to non-FPGA devices on pins 10/11
 
 ## Customization
 
