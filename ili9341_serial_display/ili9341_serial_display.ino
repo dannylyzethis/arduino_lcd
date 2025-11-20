@@ -1,8 +1,12 @@
 /*
- * ILI9341 Serial Display Controller - SPLIT SCREEN VERSION
+ * ILI9341 Serial Display Controller - SPLIT SCREEN VERSION WITH BYPASS MODE
  * Top half: Serial command display
  * Bottom half: Bidirectional FPGA communication via SoftwareSerial
- * Features: Monitor FPGA output + Send commands to FPGA
+ *
+ * Two modes of operation:
+ * 1. NORMAL MODE: Arduino interprets commands, FPGA output on bottom LCD
+ * 2. BYPASS MODE: Direct USB <-> FPGA passthrough (use #BYPASS, exit with ###)
+ *
  * FPGA Connection: Pin 10 = RX, Pin 11 = TX
  * LCD Shield: Uses D2-D9 (data), A0-A4 (control)
  * Optimized for Arduino Uno R3 (under 2KB RAM)
@@ -63,6 +67,10 @@ bool cmdReady = false;
 String fpgaBuffer = "";
 unsigned long fpgaBaud = 9600; // Default FPGA baud rate
 
+// Bypass mode - direct USB <-> FPGA pass-through
+bool bypassMode = false;
+unsigned long bypassStartTime = 0;
+
 void setup() {
   Serial.begin(9600);
   Serial.println(F("ILI9341 Split Screen Ready"));
@@ -113,6 +121,73 @@ void setup() {
 }
 
 void loop() {
+  // BYPASS MODE: Direct USB <-> FPGA pass-through
+  if (bypassMode) {
+    // Forward USB serial to FPGA
+    while (Serial.available()) {
+      char c = Serial.read();
+
+      // Check for escape sequence: three consecutive '#' chars within 500ms
+      static char escBuf[3] = {0, 0, 0};
+      static unsigned long lastEscTime = 0;
+
+      if (c == '#') {
+        unsigned long now = millis();
+        if (now - lastEscTime < 500) {
+          // Shift buffer
+          escBuf[0] = escBuf[1];
+          escBuf[1] = escBuf[2];
+          escBuf[2] = '#';
+
+          if (escBuf[0] == '#' && escBuf[1] == '#' && escBuf[2] == '#') {
+            // Exit bypass mode
+            bypassMode = false;
+            Serial.println(F("\n[EXIT BYPASS MODE]"));
+            showTextTop("[Bypass OFF]");
+            escBuf[0] = escBuf[1] = escBuf[2] = 0;
+            return;
+          }
+        } else {
+          // Reset buffer
+          escBuf[0] = escBuf[1] = 0;
+          escBuf[2] = '#';
+        }
+        lastEscTime = now;
+      } else {
+        escBuf[0] = escBuf[1] = escBuf[2] = 0;
+      }
+
+      fpgaSerial.write(c);
+      // Echo to LCD bottom
+      if (c == '\n' || c == '\r') {
+        if (fpgaBuffer.length() > 0) {
+          showTextBottom(">" + fpgaBuffer);
+          fpgaBuffer = "";
+        }
+      } else if (isPrintable(c)) {
+        fpgaBuffer += c;
+      }
+    }
+
+    // Forward FPGA serial to USB
+    while (fpgaSerial.available()) {
+      char c = fpgaSerial.read();
+      Serial.write(c);
+      // Echo to LCD bottom
+      if (c == '\n' || c == '\r') {
+        if (fpgaBuffer.length() > 0) {
+          showTextBottom("<" + fpgaBuffer);
+          fpgaBuffer = "";
+        }
+      } else if (isPrintable(c)) {
+        fpgaBuffer += c;
+      }
+    }
+
+    return;  // Skip normal processing
+  }
+
+  // NORMAL MODE: Process commands
   // Process command serial
   if (cmdReady) {
     processCmd(cmd);
@@ -224,6 +299,11 @@ void showText(const String& txt) {
   Serial.print(lines);
   Serial.print(F("L: "));
   Serial.println(txt);
+}
+
+// Display text in TOP section (simple wrapper)
+void showTextTop(const String& txt) {
+  showText(txt);
 }
 
 // Display text in BOTTOM section (FPGA monitor)
@@ -429,6 +509,15 @@ void processCmd(String c) {
       fpgaSerial.println(F("PING"));
       Serial.println(F("Ping sent to FPGA"));
 
+    } else if (c == "#BYPASS") {
+      bypassMode = true;
+      bypassStartTime = millis();
+      Serial.println(F("[BYPASS MODE ACTIVE]"));
+      Serial.println(F("Direct USB <-> FPGA communication"));
+      Serial.println(F("Send ### to exit"));
+      showTextTop("[Bypass ON]");
+      showTextBottom("USB<->FPGA Active");
+
     } else if (c == "#HELP") {
       help();
       
@@ -628,6 +717,8 @@ void help() {
   Serial.println(F("#FPGABAUD <rate>"));
   Serial.println(F("#FPGASEND <data> - Send to FPGA"));
   Serial.println(F("#FPGAPING - Send ping"));
+  Serial.println(F("#BYPASS - Enter passthrough mode"));
+  Serial.println(F("  (Send ### to exit)"));
   Serial.println(F("== Graphics =="));
   Serial.println(F("#RECT <x y w h>"));
   Serial.println(F("#FILL <x y w h>"));

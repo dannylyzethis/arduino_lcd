@@ -96,6 +96,24 @@ These modules enable an FPGA to communicate with the Arduino LCD controller via 
 
 **Note:** Pins 10 and 11 are free when the LCD shield uses 8-bit parallel mode (D2-D9 for data, A0-A4 for control). This avoids conflicts with the LCD shield control pins.
 
+## Operating Modes
+
+The Arduino LCD system operates in two modes:
+
+### Normal Mode (Default)
+- Arduino interprets commands from USB serial
+- FPGA output automatically displays on LCD bottom section
+- Full command set available (#CLR, #COLOR, #FPGASEND, etc.)
+
+### Bypass Mode (Transparent Pass-Through)
+- Direct USB ↔ FPGA communication
+- Arduino acts as transparent bridge
+- LCD shows conversation (> for USB→FPGA, < for FPGA→USB)
+- Useful for direct FPGA debugging/programming
+
+**Enter bypass mode:** Send `#BYPASS` command
+**Exit bypass mode:** Send `###` (three hash symbols)
+
 ## Command Protocol
 
 ### Commands Received (Arduino → FPGA)
@@ -154,6 +172,8 @@ end process;
 ```
 
 ### Testing Communication
+
+**Normal Mode:**
 1. Upload Arduino sketch to Arduino Uno
 2. Program FPGA with lcd_interface module
 3. Connect wiring as shown above
@@ -161,6 +181,15 @@ end process;
 5. From Arduino Serial Monitor, send: `#FPGAPING`
 6. LCD bottom section should display: `PONG`
 7. FPGA can send status by pulsing `send_status` signal
+
+**Bypass Mode (Direct FPGA Access):**
+1. From Serial Monitor, send: `#BYPASS`
+2. Arduino responds: `[BYPASS MODE ACTIVE]`
+3. Now you're talking directly to FPGA
+4. Send: `PING`
+5. FPGA responds: `PONG` (visible in Serial Monitor AND LCD)
+6. LCD shows: `>PING` (sent) and `<PONG` (received)
+7. To exit, send: `###`
 
 ## Customization
 
