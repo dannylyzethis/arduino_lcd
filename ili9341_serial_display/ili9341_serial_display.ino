@@ -3,6 +3,7 @@
  * Top half: Serial command display
  * Bottom half: Bidirectional FPGA communication via SoftwareSerial
  * Features: Monitor FPGA output + Send commands to FPGA
+ * FPGA Connection: A4 (SDA) = RX, A5 (SCL) = TX
  * Optimized for Arduino Uno R3 (under 2KB RAM)
  */
 
@@ -12,8 +13,9 @@
 
 MCUFRIEND_kbv tft;
 
-// SoftwareSerial for FPGA (RX=pin 2, TX=pin 3)
-SoftwareSerial fpgaSerial(2, 3);
+// SoftwareSerial for FPGA (RX=A4/SDA, TX=A5/SCL)
+// Using analog pins A4 and A5 (also digital pins 18 and 19)
+SoftwareSerial fpgaSerial(A4, A5);
 
 // Display constants
 #define BASE_CHAR_W 6

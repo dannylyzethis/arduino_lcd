@@ -14,7 +14,7 @@ These modules enable an FPGA to communicate with the Arduino LCD controller via 
 
 ### uart_rx.vhd
 **UART Receiver**
-- Receives serial data from Arduino TX (pin 3)
+- Receives serial data from Arduino TX (A5/SCL)
 - 8 data bits, 1 stop bit, no parity
 - Configurable baud rate (default 9600)
 - Synchronizes input to prevent metastability
@@ -33,7 +33,7 @@ These modules enable an FPGA to communicate with the Arduino LCD controller via 
 
 ### uart_tx.vhd
 **UART Transmitter**
-- Sends serial data to Arduino RX (pin 2)
+- Sends serial data to Arduino RX (A4/SDA)
 - 8 data bits, 1 stop bit, no parity
 - Configurable baud rate (default 9600)
 - Indicates busy status during transmission
@@ -65,8 +65,8 @@ These modules enable an FPGA to communicate with the Arduino LCD controller via 
 **Ports:**
 - `clk`: System clock
 - `rst`: Active high reset
-- `uart_rx`: UART receive line (from Arduino TX, pin 3)
-- `uart_tx`: UART transmit line (to Arduino RX, pin 2)
+- `uart_rx`: UART receive line (from Arduino TX, A5/SCL)
+- `uart_tx`: UART transmit line (to Arduino RX, A4/SDA)
 - `status_in`: 8-bit status value to report
 - `counter_in`: 16-bit counter value (reserved for future use)
 - `send_status`: Pulse high to send status message to LCD
@@ -77,22 +77,24 @@ These modules enable an FPGA to communicate with the Arduino LCD controller via 
 
 ### Wiring Diagram
 ```
-┌─────────────┐              ┌──────────────┐
-│   Arduino   │              │     FPGA     │
-│  (Uno R3)   │              │              │
-├─────────────┤              ├──────────────┤
-│ Pin 2 (RX)  │◄─────TX──────│ uart_tx      │
-│ Pin 3 (TX)  │──────RX─────►│ uart_rx      │
-│ GND         │──────────────│ GND          │
-└─────────────┘              └──────────────┘
+┌─────────────────┐              ┌──────────────┐
+│   Arduino       │              │     FPGA     │
+│  (Uno R3)       │              │              │
+├─────────────────┤              ├──────────────┤
+│ A4/SDA (pin 18) │◄─────TX──────│ uart_tx      │
+│ A5/SCL (pin 19) │──────RX─────►│ uart_rx      │
+│ GND             │──────────────│ GND          │
+└─────────────────┘              └──────────────┘
 ```
 
 ### Pin Connections
-| Arduino | FPGA Signal | Direction | Description |
-|---------|-------------|-----------|-------------|
-| Pin 2   | uart_tx     | ← FPGA    | Arduino receives data |
-| Pin 3   | uart_rx     | → FPGA    | FPGA receives commands |
-| GND     | GND         | -         | Common ground (required) |
+| Arduino          | FPGA Signal | Direction | Description |
+|------------------|-------------|-----------|-------------|
+| A4 (SDA/pin 18)  | uart_tx     | ← FPGA    | Arduino receives data |
+| A5 (SCL/pin 19)  | uart_rx     | → FPGA    | FPGA receives commands |
+| GND              | GND         | -         | Common ground (required) |
+
+**Note:** Using A4/A5 (SCL/SDA) frees up digital pins 2 and 3 for other uses. These pins work perfectly with SoftwareSerial and won't interfere with I2C unless you're actively using I2C devices.
 
 ## Command Protocol
 
