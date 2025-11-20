@@ -1,7 +1,8 @@
 /*
  * ILI9341 Serial Display Controller - SPLIT SCREEN VERSION
  * Top half: Serial command display
- * Bottom half: FPGA monitor via SoftwareSerial
+ * Bottom half: Bidirectional FPGA communication via SoftwareSerial
+ * Features: Monitor FPGA output + Send commands to FPGA
  * Optimized for Arduino Uno R3 (under 2KB RAM)
  */
 
@@ -414,6 +415,16 @@ void processCmd(String c) {
         Serial.println(baud);
       }
 
+    } else if (c.startsWith("#FPGASEND ")) {
+      String data = c.substring(10);
+      fpgaSerial.println(data);
+      Serial.print(F("Sent to FPGA: "));
+      Serial.println(data);
+
+    } else if (c == "#FPGAPING") {
+      fpgaSerial.println(F("PING"));
+      Serial.println(F("Ping sent to FPGA"));
+
     } else if (c == "#HELP") {
       help();
       
@@ -611,6 +622,8 @@ void help() {
   Serial.println(F("#BOTSIZE <1-5>"));
   Serial.println(F("#BOTCOLOR <name>"));
   Serial.println(F("#FPGABAUD <rate>"));
+  Serial.println(F("#FPGASEND <data> - Send to FPGA"));
+  Serial.println(F("#FPGAPING - Send ping"));
   Serial.println(F("== Graphics =="));
   Serial.println(F("#RECT <x y w h>"));
   Serial.println(F("#FILL <x y w h>"));
