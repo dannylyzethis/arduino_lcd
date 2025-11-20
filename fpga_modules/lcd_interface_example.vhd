@@ -18,8 +18,8 @@ entity lcd_interface_example is
         rst_n       : in  std_logic;          -- Active-low reset button
 
         -- UART to Arduino
-        arduino_rx  : out std_logic;          -- To Arduino A4 (SDA)
-        arduino_tx  : in  std_logic;          -- From Arduino A5 (SCL)
+        arduino_rx  : out std_logic;          -- To Arduino pin 10
+        arduino_tx  : in  std_logic;          -- From Arduino pin 11
 
         -- User inputs/outputs (example)
         switches    : in  std_logic_vector(7 downto 0);  -- 8 switches

@@ -3,7 +3,8 @@
  * Top half: Serial command display
  * Bottom half: Bidirectional FPGA communication via SoftwareSerial
  * Features: Monitor FPGA output + Send commands to FPGA
- * FPGA Connection: A4 (SDA) = RX, A5 (SCL) = TX
+ * FPGA Connection: Pin 10 = RX, Pin 11 = TX
+ * LCD Shield: Uses D2-D9 (data), A0-A4 (control)
  * Optimized for Arduino Uno R3 (under 2KB RAM)
  */
 
@@ -13,9 +14,10 @@
 
 MCUFRIEND_kbv tft;
 
-// SoftwareSerial for FPGA (RX=A4/SDA, TX=A5/SCL)
-// Using analog pins A4 and A5 (also digital pins 18 and 19)
-SoftwareSerial fpgaSerial(A4, A5);
+// SoftwareSerial for FPGA (RX=pin 10, TX=pin 11)
+// Pins 10 and 11 are free when LCD uses 8-bit parallel mode
+// Note: A4 is used by LCD shield for RST, so we can't use it
+SoftwareSerial fpgaSerial(10, 11);
 
 // Display constants
 #define BASE_CHAR_W 6
