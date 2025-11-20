@@ -1,14 +1,13 @@
 /*
- * ILI9341 Serial Display Controller - SPLIT SCREEN VERSION WITH BYPASS MODE
+ * ILI9341 Serial Display Controller - SPLIT SCREEN VERSION
  * Top half: Serial command display
  * Bottom half: Bidirectional FPGA communication via SoftwareSerial
  *
- * Two modes of operation:
- * 1. NORMAL MODE: Arduino interprets commands, FPGA output on bottom LCD
- * 2. BYPASS MODE: 100% transparent USB <-> FPGA (raw bytes, zero processing)
- *    - Enter: Send #BYPASS command
- *    - Exit: Send ### (three hash symbols)
- *    - Arduino becomes invisible bridge
+ * Command prefix system:
+ * - # prefix: Arduino commands (#CLR, #COLOR, etc.)
+ * - >>> prefix: Direct FPGA forwarding (>>> PING)
+ * - No prefix: Display text on top section
+ * - FPGA responses: Always forwarded to USB serial
  *
  * FPGA Connection: Pin 10 = RX, Pin 11 = TX
  * LCD Shield: Uses D2-D9 (data), A0-A4 (control)
@@ -70,10 +69,6 @@ bool cmdReady = false;
 String fpgaBuffer = "";
 unsigned long fpgaBaud = 9600; // Default FPGA baud rate
 
-// Bypass mode - direct USB <-> FPGA pass-through
-bool bypassMode = false;
-unsigned long bypassStartTime = 0;
-
 void setup() {
   Serial.begin(9600);
   Serial.println(F("ILI9341 Split Screen Ready"));
@@ -124,57 +119,6 @@ void setup() {
 }
 
 void loop() {
-  // BYPASS MODE: Completely transparent USB <-> FPGA pass-through
-  // No formatting, no echoing, just raw byte forwarding
-  if (bypassMode) {
-    // Forward USB serial to FPGA (raw bytes)
-    while (Serial.available()) {
-      char c = Serial.read();
-
-      // Check for escape sequence: three consecutive '#' chars within 500ms
-      static char escBuf[3] = {0, 0, 0};
-      static unsigned long lastEscTime = 0;
-
-      if (c == '#') {
-        unsigned long now = millis();
-        if (now - lastEscTime < 500) {
-          // Shift buffer
-          escBuf[0] = escBuf[1];
-          escBuf[1] = escBuf[2];
-          escBuf[2] = '#';
-
-          if (escBuf[0] == '#' && escBuf[1] == '#' && escBuf[2] == '#') {
-            // Exit bypass mode - don't forward the ### to FPGA
-            bypassMode = false;
-            Serial.println(F("\n[EXIT BYPASS MODE]"));
-            showTextTop("[Bypass OFF]");
-            escBuf[0] = escBuf[1] = escBuf[2] = 0;
-            return;
-          }
-        } else {
-          // Reset buffer
-          escBuf[0] = escBuf[1] = 0;
-          escBuf[2] = '#';
-        }
-        lastEscTime = now;
-      } else {
-        escBuf[0] = escBuf[1] = escBuf[2] = 0;
-      }
-
-      // Forward byte to FPGA (completely transparent)
-      fpgaSerial.write(c);
-    }
-
-    // Forward FPGA serial to USB (raw bytes, completely transparent)
-    while (fpgaSerial.available()) {
-      char c = fpgaSerial.read();
-      Serial.write(c);
-    }
-
-    return;  // Skip normal processing
-  }
-
-  // NORMAL MODE: Process commands
   // Process command serial
   if (cmdReady) {
     processCmd(cmd);
@@ -182,9 +126,14 @@ void loop() {
     cmdReady = false;
   }
 
-  // Process FPGA serial
+  // Process FPGA serial - forward responses to USB
   while (fpgaSerial.available()) {
     char c = fpgaSerial.read();
+
+    // Forward to USB serial
+    Serial.write(c);
+
+    // Also display on LCD bottom
     if (c == '\n' || c == '\r') {
       if (fpgaBuffer.length() > 0) {
         showTextBottom(fpgaBuffer);
@@ -341,7 +290,17 @@ void showTextBottom(const String& txt) {
 // Process commands
 void processCmd(String c) {
   c.trim();
-  
+
+  // Direct FPGA forwarding with >>> prefix
+  if (c.startsWith(">>>")) {
+    String data = c.substring(3);
+    data.trim();
+    fpgaSerial.println(data);
+    Serial.print(F("[FPGA>] "));
+    Serial.println(data);
+    return;
+  }
+
   if (c.startsWith("#")) {
     c.toUpperCase();
     
@@ -495,17 +454,6 @@ void processCmd(String c) {
     } else if (c == "#FPGAPING") {
       fpgaSerial.println(F("PING"));
       Serial.println(F("Ping sent to FPGA"));
-
-    } else if (c == "#BYPASS") {
-      bypassMode = true;
-      bypassStartTime = millis();
-      Serial.println(F("[BYPASS MODE ACTIVE]"));
-      Serial.println(F("Transparent pass-through enabled"));
-      Serial.println(F("Raw bytes: USB <-> FPGA"));
-      Serial.println(F("Send ### to exit"));
-      Serial.println();
-      showTextTop("[Bypass ON]");
-      showTextBottom("Transparent Mode");
 
     } else if (c == "#HELP") {
       help();
@@ -706,9 +654,8 @@ void help() {
   Serial.println(F("#FPGABAUD <rate>"));
   Serial.println(F("#FPGASEND <data> - Send to FPGA"));
   Serial.println(F("#FPGAPING - Send ping"));
-  Serial.println(F("#BYPASS - Transparent mode"));
-  Serial.println(F("  (100% raw passthrough)"));
-  Serial.println(F("  (Exit with ###)"));
+  Serial.println(F(">>> <data> - Direct FPGA forward"));
+  Serial.println(F("  (Response auto-forwarded to USB)"));
   Serial.println(F("== Graphics =="));
   Serial.println(F("#RECT <x y w h>"));
   Serial.println(F("#FILL <x y w h>"));

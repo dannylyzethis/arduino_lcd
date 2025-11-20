@@ -96,26 +96,26 @@ These modules enable an FPGA to communicate with the Arduino LCD controller via 
 
 **Note:** Pins 10 and 11 are free when the LCD shield uses 8-bit parallel mode (D2-D9 for data, A0-A4 for control). This avoids conflicts with the LCD shield control pins.
 
-## Operating Modes
+## Communication Architecture
 
-The Arduino LCD system operates in two modes:
+The system uses a prefix-based command routing:
 
-### Normal Mode (Default)
-- Arduino interprets commands from USB serial
-- FPGA output automatically displays on LCD bottom section
-- Full command set available (#CLR, #COLOR, #FPGASEND, etc.)
+### Command Prefixes
+- **`#` prefix**: Arduino commands (#CLR, #COLOR, #SIZE, etc.)
+- **`>>>` prefix**: Direct FPGA forwarding (>>> PING)
+- **No prefix**: Display text on top LCD section
 
-### Bypass Mode (100% Transparent Pass-Through)
-- Direct USB ↔ FPGA communication with ZERO processing
-- Raw byte forwarding in both directions
-- Arduino becomes completely invisible bridge
-- No formatting, no buffering, no LCD updates during operation
-- Perfect for FPGA programming, direct debugging, or any external device
-- Works with binary protocols, not just text
+### Response Routing
+- **FPGA responses**: Always automatically forwarded to USB serial
+- **Also displayed**: On LCD bottom section in real-time
 
-**Enter bypass mode:** Send `#BYPASS` command
-**Exit bypass mode:** Send `###` (three hash symbols within 500ms)
-**Note:** The ### escape sequence is the ONLY processing done in bypass mode
+### Example Flow
+```
+USB: >>> PING              (You send to FPGA)
+Arduino: [FPGA>] PING      (Confirms forwarding)
+FPGA: PONG                 (Response appears on USB serial)
+LCD Bottom: PONG           (Also displayed on screen)
+```
 
 ## Command Protocol
 
@@ -176,32 +176,43 @@ end process;
 
 ### Testing Communication
 
-**Normal Mode:**
+**Setup:**
 1. Upload Arduino sketch to Arduino Uno
 2. Program FPGA with lcd_interface module
 3. Connect wiring as shown above
 4. Power both devices
-5. From Arduino Serial Monitor, send: `#FPGAPING`
-6. LCD bottom section should display: `PONG`
-7. FPGA can send status by pulsing `send_status` signal
+5. Open Serial Monitor at 9600 baud
 
-**Bypass Mode (100% Transparent - Direct FPGA/Device Access):**
-1. From Serial Monitor, send: `#BYPASS`
-2. Arduino responds: `[BYPASS MODE ACTIVE]` then goes silent
-3. Now you're talking DIRECTLY to FPGA with zero Arduino interference
-4. Send: `PING`
-5. FPGA responds: `PONG` (visible ONLY in Serial Monitor, raw bytes)
-6. LCD shows static message: "Transparent Mode" (no updates during operation)
-7. All bytes pass through transparently - text, binary, any protocol
-8. To exit, send: `###`
-9. Arduino responds: `[EXIT BYPASS MODE]` and returns to normal mode
+**Method 1: Using Arduino Command (#FPGAPING)**
+```
+Send: #FPGAPING
+Arduino: Ping sent to FPGA
+FPGA: PONG                    (appears in Serial Monitor)
+LCD Bottom: PONG              (also displayed on screen)
+```
 
-**Use cases for bypass mode:**
-- FPGA firmware upload
-- Direct UART communication with any device
-- Binary protocol testing
-- Maximum performance (zero Arduino overhead)
-- Connecting to non-FPGA devices on pins 10/11
+**Method 2: Using Direct Forward (>>>)**
+```
+Send: >>> PING
+Arduino: [FPGA>] PING         (confirms forwarding)
+FPGA: PONG                    (appears in Serial Monitor)
+LCD Bottom: PONG              (also displayed on screen)
+```
+
+**Method 3: Using #FPGASEND Command**
+```
+Send: #FPGASEND STATUS
+Arduino: Sent to FPGA: STATUS
+FPGA: STAT: 42                (response in Serial Monitor)
+LCD Bottom: STAT: 42          (also on screen)
+```
+
+**Advantages of >>> prefix:**
+- Direct, unmodified forwarding to FPGA
+- Responses automatically come back to USB
+- Clear separation between Arduino and FPGA commands
+- Works with any FPGA command format
+- No mode switching needed
 
 ## Customization
 
