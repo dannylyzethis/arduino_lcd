@@ -130,8 +130,9 @@ void loop() {
   while (fpgaSerial.available()) {
     char c = fpgaSerial.read();
 
-    // Forward to USB serial
+    // Forward to USB serial immediately
     Serial.write(c);
+    Serial.flush();  // Ensure immediate transmission
 
     // Also display on LCD bottom
     if (c == '\n' || c == '\r') {
@@ -455,6 +456,15 @@ void processCmd(String c) {
       fpgaSerial.println(F("PING"));
       Serial.println(F("Ping sent to FPGA"));
 
+    } else if (c.startsWith("#FPGABYTES ")) {
+      // Send raw bytes: #FPGABYTES 48 45 4C 4C 4F
+      String hexData = c.substring(11);
+      hexData.trim();
+      int bytesSent = sendHexBytes(hexData);
+      Serial.print(F("Sent "));
+      Serial.print(bytesSent);
+      Serial.println(F(" bytes to FPGA"));
+
     } else if (c == "#HELP") {
       help();
       
@@ -544,6 +554,60 @@ uint16_t getColorFromName(String& n) {
   else if (n == "ORANGE") return 0xFD20;
   else if (n == "PINK") return 0xF81F;
   return 0xFFFF; // Default to white if invalid, but could ignore
+}
+
+// Send raw hex bytes to FPGA
+// Format: space-separated hex values (e.g., "48 45 4C 4C 4F" or "0x48 0x45")
+int sendHexBytes(String hexStr) {
+  int byteCount = 0;
+  int startIdx = 0;
+
+  while (startIdx < hexStr.length()) {
+    // Skip whitespace
+    while (startIdx < hexStr.length() && hexStr[startIdx] == ' ') {
+      startIdx++;
+    }
+
+    if (startIdx >= hexStr.length()) break;
+
+    // Find end of this hex number
+    int endIdx = startIdx;
+    while (endIdx < hexStr.length() && hexStr[endIdx] != ' ') {
+      endIdx++;
+    }
+
+    // Extract hex string
+    String hexByte = hexStr.substring(startIdx, endIdx);
+    hexByte.trim();
+
+    // Skip "0x" or "0X" prefix if present
+    if (hexByte.startsWith("0x") || hexByte.startsWith("0X")) {
+      hexByte = hexByte.substring(2);
+    }
+
+    // Convert to byte and send
+    if (hexByte.length() > 0) {
+      long value = strtol(hexByte.c_str(), NULL, 16);
+      if (value >= 0 && value <= 255) {
+        fpgaSerial.write((uint8_t)value);
+        byteCount++;
+
+        // Echo to Serial for confirmation
+        if (byteCount > 1) Serial.print(F(" "));
+        Serial.print(F("0x"));
+        if (value < 16) Serial.print(F("0"));
+        Serial.print(value, HEX);
+      }
+    }
+
+    startIdx = endIdx;
+  }
+
+  if (byteCount > 0) {
+    Serial.println();
+  }
+
+  return byteCount;
 }
 
 // Shape parsing - compact
@@ -652,10 +716,12 @@ void help() {
   Serial.println(F("#BOTSIZE <1-5>"));
   Serial.println(F("#BOTCOLOR <name>"));
   Serial.println(F("#FPGABAUD <rate>"));
-  Serial.println(F("#FPGASEND <data> - Send to FPGA"));
+  Serial.println(F("#FPGASEND <data> - Send text"));
+  Serial.println(F("#FPGABYTES <hex> - Send raw bytes"));
+  Serial.println(F("  (e.g. 48 45 4C or 0x48 0x45)"));
   Serial.println(F("#FPGAPING - Send ping"));
-  Serial.println(F(">>> <data> - Direct FPGA forward"));
-  Serial.println(F("  (Response auto-forwarded to USB)"));
+  Serial.println(F(">>> <data> - Direct forward"));
+  Serial.println(F("  (Response auto to USB)"));
   Serial.println(F("== Graphics =="));
   Serial.println(F("#RECT <x y w h>"));
   Serial.println(F("#FILL <x y w h>"));

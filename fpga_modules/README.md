@@ -106,16 +106,32 @@ The system uses a prefix-based command routing:
 - **No prefix**: Display text on top LCD section
 
 ### Response Routing
-- **FPGA responses**: Always automatically forwarded to USB serial
-- **Also displayed**: On LCD bottom section in real-time
+- **FPGA responses**: Always automatically forwarded to USB serial in real-time
+- **Serial.flush()**: Ensures immediate transmission (no buffering)
+- **Also displayed**: On LCD bottom section for visual feedback
+- **Any data from FPGA**: Automatically appears on your USB serial terminal
 
 ### Example Flow
 ```
 USB: >>> PING              (You send to FPGA)
 Arduino: [FPGA>] PING      (Confirms forwarding)
-FPGA: PONG                 (Response appears on USB serial)
+FPGA: PONG                 (Response immediately appears on USB serial)
 LCD Bottom: PONG           (Also displayed on screen)
 ```
+
+### Sending Raw Bytes
+For binary protocols, use `#FPGABYTES` to send raw hex values:
+```
+USB: #FPGABYTES 48 45 4C 4C 4F
+Arduino: 0x48 0x45 0x4C 0x4C 0x4F
+         Sent 5 bytes to FPGA
+FPGA: (receives raw bytes: 'H' 'E' 'L' 'L' 'O')
+```
+
+Formats supported:
+- Space-separated hex: `48 45 4C`
+- With 0x prefix: `0x48 0x45 0x4C`
+- Mixed: `48 0x45 4C`
 
 ## Command Protocol
 
@@ -207,12 +223,21 @@ FPGA: STAT: 42                (response in Serial Monitor)
 LCD Bottom: STAT: 42          (also on screen)
 ```
 
-**Advantages of >>> prefix:**
-- Direct, unmodified forwarding to FPGA
-- Responses automatically come back to USB
-- Clear separation between Arduino and FPGA commands
-- Works with any FPGA command format
-- No mode switching needed
+**Method 4: Sending Raw Bytes (#FPGABYTES)**
+```
+Send: #FPGABYTES 50 49 4E 47 0A
+Arduino: 0x50 0x49 0x4E 0x47 0x0A
+         Sent 5 bytes to FPGA
+FPGA: PONG                    (raw bytes sent: 'PING\n')
+```
+
+**Key Features:**
+- **>>> prefix**: Direct, unmodified text forwarding
+- **#FPGABYTES**: Send binary data (useful for protocols)
+- **Auto-forwarding**: All FPGA responses go to USB immediately
+- **Serial.flush()**: No buffering delays
+- **Visual feedback**: LCD shows FPGA activity
+- **No mode switching**: Everything works simultaneously
 
 ## Customization
 
