@@ -19,8 +19,8 @@ entity lcd_interface is
         rst         : in  std_logic;
 
         -- UART connections to Arduino
-        uart_rx     : in  std_logic;           -- From Arduino TX (pin 3)
-        uart_tx     : out std_logic;           -- To Arduino RX (pin 2)
+        uart_rx     : in  std_logic;           -- From Arduino TX (pin 13)
+        uart_tx     : out std_logic;           -- To Arduino RX (pin 12)
 
         -- User interface (example signals)
         status_in   : in  std_logic_vector(7 downto 0);  -- System status byte

@@ -9,7 +9,7 @@
  * - No prefix: Display text on top section
  * - FPGA responses: Always forwarded to USB serial
  *
- * FPGA Connection: Pin 10 = RX, Pin 11 = TX
+ * FPGA Connection: Pin 12 = RX, Pin 13 = TX (via ICSP header)
  * LCD Shield: Uses D2-D9 (data), A0-A4 (control)
  * Optimized for Arduino Uno R3 (under 2KB RAM)
  */
@@ -20,10 +20,10 @@
 
 MCUFRIEND_kbv tft;
 
-// SoftwareSerial for FPGA (RX=pin 10, TX=pin 11)
-// Pins 10 and 11 are free when LCD uses 8-bit parallel mode
-// Note: A4 is used by LCD shield for RST, so we can't use it
-SoftwareSerial fpgaSerial(10, 11);
+// SoftwareSerial for FPGA (RX=pin 12, TX=pin 13)
+// Pins 12 and 13 accessible via ICSP header for clean wiring
+// Note: Pin 13 has onboard LED (will blink during transmission)
+SoftwareSerial fpgaSerial(12, 13);
 
 // Display constants
 #define BASE_CHAR_W 6
