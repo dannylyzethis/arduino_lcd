@@ -17,8 +17,26 @@
 #include <Adafruit_GFX.h>
 #include <MCUFRIEND_kbv.h>
 #include <SoftwareSerial.h>
+#include <TouchScreen.h>
 
 MCUFRIEND_kbv tft;
+
+// Touchscreen pins (standard MCUFRIEND configuration)
+#define YP A3  // Y+ is on Analog3
+#define XM A2  // X- is on Analog2
+#define YM 9   // Y- is on Digital9
+#define XP 8   // X+ is on Digital8
+
+// Touchscreen calibration (adjust these for your specific screen)
+#define TS_MINX 120
+#define TS_MAXX 900
+#define TS_MINY 70
+#define TS_MAXY 920
+
+#define MINPRESSURE 10
+#define MAXPRESSURE 1000
+
+TouchScreen ts = TouchScreen(XP, YP, XM, YM, 300);
 
 // SoftwareSerial for FPGA (RX=pin 12, TX=pin 13)
 // Pins 12 and 13 accessible via ICSP header for clean wiring
@@ -69,6 +87,24 @@ bool cmdReady = false;
 String fpgaBuffer = "";
 unsigned long fpgaBaud = 9600; // Default FPGA baud rate
 
+// Button structure for touch interface
+struct Button {
+  uint16_t x, y, w, h;
+  const char* label;
+  const char* cmd;
+  uint16_t color;
+};
+
+// Button layout - 4 direction buttons at bottom
+#define NUM_BUTTONS 4
+Button buttons[NUM_BUTTONS];
+bool buttonsVisible = false;
+uint16_t buttonTextY;  // Y position for button text area
+
+// Touch debounce
+unsigned long lastTouch = 0;
+#define TOUCH_DEBOUNCE 200  // milliseconds
+
 void setup() {
   Serial.begin(9600);
   Serial.println(F("ILI9341 Split Screen Ready"));
@@ -114,11 +150,20 @@ void setup() {
   cmd.reserve(100);
   fpgaBuffer.reserve(80);
 
+  // Initialize touch buttons
+  initButtons();
+
   Serial.println(F("Top: Serial Cmds"));
   Serial.println(F("Bottom: FPGA"));
+  Serial.println(F("Touch buttons: #SHOWBTNS"));
 }
 
 void loop() {
+  // Process touch input
+  if (buttonsVisible) {
+    checkTouch();
+  }
+
   // Process command serial
   if (cmdReady) {
     processCmd(cmd);
@@ -465,6 +510,14 @@ void processCmd(String c) {
       Serial.print(bytesSent);
       Serial.println(F(" bytes to FPGA"));
 
+    } else if (c == "#SHOWBTNS") {
+      showButtons();
+      Serial.println(F("Touch buttons shown"));
+
+    } else if (c == "#HIDEBTNS") {
+      hideButtons();
+      Serial.println(F("Touch buttons hidden"));
+
     } else if (c == "#HELP") {
       help();
       
@@ -733,4 +786,161 @@ void help() {
   Serial.println(F("#TEST - Test wrap"));
   Serial.println(F("#INFO - Settings"));
   Serial.println(F("#ID - COM LCD"));
+  Serial.println(F("#SHOWBTNS - Show touch buttons"));
+  Serial.println(F("#HIDEBTNS - Hide touch buttons"));
+}
+
+// Initialize button layout
+void initButtons() {
+  // Calculate button layout in bottom section
+  // Reserve bottom 45 pixels for buttons, rest for text
+  uint16_t btnHeight = 40;
+  uint16_t btnWidth = (screenW - 10) / 4;  // 4 buttons with small gaps
+  uint16_t btnY = bottomMaxY - btnHeight - 2;
+  buttonTextY = btnY - 2;  // Text area ends just above buttons
+
+  // UP button
+  buttons[0].x = 5;
+  buttons[0].y = btnY;
+  buttons[0].w = btnWidth;
+  buttons[0].h = btnHeight;
+  buttons[0].label = "UP";
+  buttons[0].cmd = "UP";
+  buttons[0].color = 0x07E0;  // Green
+
+  // DOWN button
+  buttons[1].x = 5 + btnWidth + 2;
+  buttons[1].y = btnY;
+  buttons[1].w = btnWidth;
+  buttons[1].h = btnHeight;
+  buttons[1].label = "DN";
+  buttons[1].cmd = "DOWN";
+  buttons[1].color = 0x07E0;  // Green
+
+  // LEFT button
+  buttons[2].x = 5 + (btnWidth + 2) * 2;
+  buttons[2].y = btnY;
+  buttons[2].w = btnWidth;
+  buttons[2].h = btnHeight;
+  buttons[2].label = "LT";
+  buttons[2].cmd = "LEFT";
+  buttons[2].color = 0x07E0;  // Green
+
+  // RIGHT button
+  buttons[3].x = 5 + (btnWidth + 2) * 3;
+  buttons[3].y = btnY;
+  buttons[3].w = btnWidth;
+  buttons[3].h = btnHeight;
+  buttons[3].label = "RT";
+  buttons[3].cmd = "RIGHT";
+  buttons[3].color = 0x07E0;  // Green
+}
+
+// Draw a single button
+void drawButton(uint8_t idx) {
+  Button &btn = buttons[idx];
+
+  // Draw button background
+  tft.fillRect(btn.x, btn.y, btn.w, btn.h, btn.color);
+  tft.drawRect(btn.x, btn.y, btn.w, btn.h, 0xFFFF);  // White border
+
+  // Draw label centered
+  tft.setTextColor(0x0000);  // Black text
+  tft.setTextSize(2);
+
+  // Calculate text position (centered)
+  uint8_t labelLen = strlen(btn.label);
+  int16_t textW = labelLen * 6 * 2;  // char width * size
+  int16_t textH = 8 * 2;  // char height * size
+  int16_t textX = btn.x + (btn.w - textW) / 2;
+  int16_t textY = btn.y + (btn.h - textH) / 2;
+
+  tft.setCursor(textX, textY);
+  tft.print(btn.label);
+}
+
+// Show all buttons
+void showButtons() {
+  if (buttonsVisible) return;
+
+  // Adjust bottom text area to make room for buttons
+  bottomMaxY = buttonTextY;
+
+  // Clear bottom section and redraw
+  tft.fillRect(0, bottomMinY, screenW, screenH - bottomMinY, 0x0000);
+  bottomPosX = 0;
+  bottomPosY = bottomMinY;
+
+  // Draw all buttons
+  for (uint8_t i = 0; i < NUM_BUTTONS; i++) {
+    drawButton(i);
+  }
+
+  buttonsVisible = true;
+  drawDivider();
+}
+
+// Hide buttons
+void hideButtons() {
+  if (!buttonsVisible) return;
+
+  // Restore full bottom area
+  bottomMaxY = screenH;
+
+  // Clear button area
+  tft.fillRect(0, buttonTextY, screenW, screenH - buttonTextY, 0x0000);
+
+  buttonsVisible = false;
+  drawDivider();
+}
+
+// Check for touch and handle button presses
+void checkTouch() {
+  // Prevent too-frequent polling
+  unsigned long now = millis();
+  if (now - lastTouch < TOUCH_DEBOUNCE) return;
+
+  // Get touch point
+  TSPoint p = ts.getPoint();
+
+  // Restore pins for LCD operation (touchscreen library changes pin modes)
+  pinMode(XM, OUTPUT);
+  pinMode(YP, OUTPUT);
+
+  // Check if touched
+  if (p.z < MINPRESSURE || p.z > MAXPRESSURE) return;
+
+  // Map touch coordinates to screen coordinates
+  // Adjust mapping based on rotation
+  int16_t px = map(p.x, TS_MINX, TS_MAXX, 0, screenW);
+  int16_t py = map(p.y, TS_MINY, TS_MAXY, 0, screenH);
+
+  // Check if touch is within any button
+  for (uint8_t i = 0; i < NUM_BUTTONS; i++) {
+    Button &btn = buttons[i];
+    if (px >= btn.x && px < (btn.x + btn.w) &&
+        py >= btn.y && py < (btn.y + btn.h)) {
+
+      // Button pressed!
+      lastTouch = now;
+
+      // Visual feedback - briefly invert button
+      tft.fillRect(btn.x + 1, btn.y + 1, btn.w - 2, btn.h - 2, 0xFFFF);
+      delay(50);
+      drawButton(i);
+
+      // Send command to FPGA
+      fpgaSerial.println(btn.cmd);
+
+      // Log to serial
+      Serial.print(F("[BTN>] "));
+      Serial.println(btn.cmd);
+
+      // Show on bottom screen
+      String msg = String("BTN: ") + btn.label;
+      showTextBottom(msg);
+
+      break;  // Only process one button per touch
+    }
+  }
 }
