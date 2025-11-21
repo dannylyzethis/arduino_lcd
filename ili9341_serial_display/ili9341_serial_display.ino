@@ -663,6 +663,7 @@ void help() {
   Serial.println(F("#PROG x y w h %"));
   Serial.println(F("=FPGA="));
   Serial.println(F("#SHOWBTNS #HIDEBTNS"));
+  Serial.println(F("#FPGABAUD rate"));
   Serial.println(F("#FPGASEND txt"));
   Serial.println(F("#FPGABYTES hex"));
   Serial.println(F(">>> forward"));
