@@ -806,10 +806,28 @@ void checkTouch() {
   // Check if touched
   if (p.z < MINPRESSURE || p.z > MAXPRESSURE) return;
 
-  // Map touch coordinates to screen coordinates
-  // Adjust mapping based on rotation
-  int16_t px = map(p.x, TS_MINX, TS_MAXX, 0, screenW);
-  int16_t py = map(p.y, TS_MINY, TS_MAXY, 0, screenH);
+  // Map touch coordinates based on rotation
+  int16_t px, py;
+  uint8_t rotation = tft.getRotation();
+
+  switch(rotation) {
+    case 0:  // Portrait
+      px = map(p.x, TS_MINX, TS_MAXX, 0, screenW);
+      py = map(p.y, TS_MINY, TS_MAXY, 0, screenH);
+      break;
+    case 1:  // Landscape
+      px = map(p.y, TS_MINY, TS_MAXY, 0, screenW);
+      py = map(p.x, TS_MAXX, TS_MINX, 0, screenH);
+      break;
+    case 2:  // Portrait inverted
+      px = map(p.x, TS_MAXX, TS_MINX, 0, screenW);
+      py = map(p.y, TS_MAXY, TS_MINY, 0, screenH);
+      break;
+    case 3:  // Landscape inverted
+      px = map(p.y, TS_MAXY, TS_MINY, 0, screenW);
+      py = map(p.x, TS_MINX, TS_MAXX, 0, screenH);
+      break;
+  }
 
   // Check if touch is within any button
   for (uint8_t i = 0; i < NUM_BUTTONS; i++) {
