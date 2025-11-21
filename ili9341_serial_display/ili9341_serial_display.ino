@@ -415,6 +415,15 @@ void processCmd(String c) {
         bottomPosY = bottomMinY;
         posX = posY = 0;
         drawDivider();
+
+        // Recalculate button positions for new screen dimensions
+        initButtons();
+
+        // Redraw buttons if they were visible
+        if (buttonsVisible) {
+          buttonsVisible = false;  // Reset flag
+          showButtons();           // Redraw with new positions
+        }
       }
 
     } else if (c == "#CLRBOT") {
