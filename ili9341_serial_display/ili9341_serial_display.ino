@@ -87,15 +87,26 @@ bool cmdReady = false;
 String fpgaBuffer = "";
 unsigned long fpgaBaud = 9600; // Default FPGA baud rate
 
+// Response types for button commands
+enum ResponseType {
+  RESP_NONE,       // No response expected
+  RESP_TEMP,       // 2 bytes: temperature in 0.1C units
+  RESP_STATUS,     // 1 byte: status code
+  RESP_COUNTER,    // 2 bytes: 16-bit counter
+  RESP_RAW         // Raw bytes display
+};
+
 // Button structure for touch interface
 struct Button {
   uint16_t x, y, w, h;
   const char* label;
-  const char* cmd;
+  uint8_t cmdBytes[8];    // Bytes to send to FPGA
+  uint8_t cmdLen;         // Number of bytes in command
+  ResponseType respType;  // How to interpret response
   uint16_t color;
 };
 
-// Button layout - 4 direction buttons at bottom
+// Button layout - 4 buttons at bottom
 #define NUM_BUTTONS 4
 Button buttons[NUM_BUTTONS];
 bool buttonsVisible = false;
@@ -104,6 +115,9 @@ uint16_t buttonTextY;  // Y position for button text area
 // Touch debounce
 unsigned long lastTouch = 0;
 #define TOUCH_DEBOUNCE 200  // milliseconds
+
+// Response handling
+#define RESPONSE_TIMEOUT 500  // milliseconds to wait for response
 
 void setup() {
   Serial.begin(9600);
@@ -775,6 +789,13 @@ void help() {
   Serial.println(F("#FPGAPING - Send ping"));
   Serial.println(F(">>> <data> - Direct forward"));
   Serial.println(F("  (Response auto to USB)"));
+  Serial.println(F("== Touch Buttons =="));
+  Serial.println(F("#SHOWBTNS - Show touch buttons"));
+  Serial.println(F("#HIDEBTNS - Hide touch buttons"));
+  Serial.println(F("  TMP: Query temp (2 bytes)"));
+  Serial.println(F("  STAT: Query status (1 byte)"));
+  Serial.println(F("  CNT: Query counter (2 bytes)"));
+  Serial.println(F("  DATA: Query raw data (4 bytes)"));
   Serial.println(F("== Graphics =="));
   Serial.println(F("#RECT <x y w h>"));
   Serial.println(F("#FILL <x y w h>"));
@@ -786,8 +807,6 @@ void help() {
   Serial.println(F("#TEST - Test wrap"));
   Serial.println(F("#INFO - Settings"));
   Serial.println(F("#ID - COM LCD"));
-  Serial.println(F("#SHOWBTNS - Show touch buttons"));
-  Serial.println(F("#HIDEBTNS - Hide touch buttons"));
 }
 
 // Initialize button layout
@@ -799,41 +818,61 @@ void initButtons() {
   uint16_t btnY = bottomMaxY - btnHeight - 2;
   buttonTextY = btnY - 2;  // Text area ends just above buttons
 
-  // UP button
+  // TEMP button - Query temperature
   buttons[0].x = 5;
   buttons[0].y = btnY;
   buttons[0].w = btnWidth;
   buttons[0].h = btnHeight;
-  buttons[0].label = "UP";
-  buttons[0].cmd = "UP";
-  buttons[0].color = 0x07E0;  // Green
+  buttons[0].label = "TMP";
+  buttons[0].cmdBytes[0] = 0x54;  // 'T'
+  buttons[0].cmdBytes[1] = 0x45;  // 'E'
+  buttons[0].cmdBytes[2] = 0x4D;  // 'M'
+  buttons[0].cmdBytes[3] = 0x50;  // 'P'
+  buttons[0].cmdLen = 4;
+  buttons[0].respType = RESP_TEMP;
+  buttons[0].color = 0xFD20;  // Orange
 
-  // DOWN button
+  // STATUS button - Query status
   buttons[1].x = 5 + btnWidth + 2;
   buttons[1].y = btnY;
   buttons[1].w = btnWidth;
   buttons[1].h = btnHeight;
-  buttons[1].label = "DN";
-  buttons[1].cmd = "DOWN";
+  buttons[1].label = "STAT";
+  buttons[1].cmdBytes[0] = 0x53;  // 'S'
+  buttons[1].cmdBytes[1] = 0x54;  // 'T'
+  buttons[1].cmdBytes[2] = 0x41;  // 'A'
+  buttons[1].cmdBytes[3] = 0x54;  // 'T'
+  buttons[1].cmdLen = 4;
+  buttons[1].respType = RESP_STATUS;
   buttons[1].color = 0x07E0;  // Green
 
-  // LEFT button
+  // COUNTER button - Query counter
   buttons[2].x = 5 + (btnWidth + 2) * 2;
   buttons[2].y = btnY;
   buttons[2].w = btnWidth;
   buttons[2].h = btnHeight;
-  buttons[2].label = "LT";
-  buttons[2].cmd = "LEFT";
-  buttons[2].color = 0x07E0;  // Green
+  buttons[2].label = "CNT";
+  buttons[2].cmdBytes[0] = 0x43;  // 'C'
+  buttons[2].cmdBytes[1] = 0x4E;  // 'N'
+  buttons[2].cmdBytes[2] = 0x54;  // 'T'
+  buttons[2].cmdBytes[3] = 0x52;  // 'R'
+  buttons[2].cmdLen = 4;
+  buttons[2].respType = RESP_COUNTER;
+  buttons[2].color = 0x07FF;  // Cyan
 
-  // RIGHT button
+  // DATA button - Query raw data
   buttons[3].x = 5 + (btnWidth + 2) * 3;
   buttons[3].y = btnY;
   buttons[3].w = btnWidth;
   buttons[3].h = btnHeight;
-  buttons[3].label = "RT";
-  buttons[3].cmd = "RIGHT";
-  buttons[3].color = 0x07E0;  // Green
+  buttons[3].label = "DATA";
+  buttons[3].cmdBytes[0] = 0x44;  // 'D'
+  buttons[3].cmdBytes[1] = 0x41;  // 'A'
+  buttons[3].cmdBytes[2] = 0x54;  // 'T'
+  buttons[3].cmdBytes[3] = 0x41;  // 'A'
+  buttons[3].cmdLen = 4;
+  buttons[3].respType = RESP_RAW;
+  buttons[3].color = 0x001F;  // Blue
 }
 
 // Draw a single button
@@ -929,18 +968,133 @@ void checkTouch() {
       delay(50);
       drawButton(i);
 
-      // Send command to FPGA
-      fpgaSerial.println(btn.cmd);
-
-      // Log to serial
-      Serial.print(F("[BTN>] "));
-      Serial.println(btn.cmd);
-
-      // Show on bottom screen
-      String msg = String("BTN: ") + btn.label;
-      showTextBottom(msg);
+      // Process this button press
+      handleButtonPress(i);
 
       break;  // Only process one button per touch
     }
   }
+}
+
+// Handle button press - send bytes and process response
+void handleButtonPress(uint8_t btnIdx) {
+  Button &btn = buttons[btnIdx];
+
+  // Clear any pending FPGA data
+  while (fpgaSerial.available()) {
+    fpgaSerial.read();
+  }
+
+  // Send command bytes to FPGA
+  for (uint8_t i = 0; i < btn.cmdLen; i++) {
+    fpgaSerial.write(btn.cmdBytes[i]);
+  }
+
+  // Log to USB serial
+  Serial.print(F("[BTN>] "));
+  Serial.print(btn.label);
+  Serial.print(F(" = "));
+  for (uint8_t i = 0; i < btn.cmdLen; i++) {
+    if (i > 0) Serial.print(F(" "));
+    Serial.print(F("0x"));
+    if (btn.cmdBytes[i] < 16) Serial.print(F("0"));
+    Serial.print(btn.cmdBytes[i], HEX);
+  }
+  Serial.println();
+
+  // Wait for and process response
+  if (btn.respType != RESP_NONE) {
+    processButtonResponse(btn);
+  }
+}
+
+// Process FPGA response for button command
+void processButtonResponse(Button &btn) {
+  uint8_t respBytes[8];
+  uint8_t bytesRead = 0;
+  unsigned long startTime = millis();
+
+  // Determine how many bytes to expect
+  uint8_t expectedBytes = 0;
+  switch (btn.respType) {
+    case RESP_STATUS:  expectedBytes = 1; break;
+    case RESP_TEMP:    expectedBytes = 2; break;
+    case RESP_COUNTER: expectedBytes = 2; break;
+    case RESP_RAW:     expectedBytes = 4; break;  // Up to 4 bytes for raw
+    default: return;
+  }
+
+  // Read response bytes with timeout
+  while (bytesRead < expectedBytes && (millis() - startTime) < RESPONSE_TIMEOUT) {
+    if (fpgaSerial.available()) {
+      respBytes[bytesRead++] = fpgaSerial.read();
+    }
+  }
+
+  // Check if we got a response
+  if (bytesRead == 0) {
+    showTextBottom(F("No response"));
+    Serial.println(F("[FPGA] No response"));
+    return;
+  }
+
+  // Parse and display based on response type
+  String result = "";
+
+  switch (btn.respType) {
+    case RESP_TEMP: {
+      // 2 bytes: 16-bit signed temperature in 0.1°C units
+      if (bytesRead >= 2) {
+        int16_t temp = (respBytes[0] << 8) | respBytes[1];
+        float tempC = temp / 10.0;
+        result = "Temp: ";
+        result += String(tempC, 1);
+        result += "C";
+      }
+      break;
+    }
+
+    case RESP_STATUS: {
+      // 1 byte: status code
+      result = "Status: 0x";
+      if (respBytes[0] < 16) result += "0";
+      result += String(respBytes[0], HEX);
+      result += " (";
+      result += String(respBytes[0]);
+      result += ")";
+      break;
+    }
+
+    case RESP_COUNTER: {
+      // 2 bytes: 16-bit unsigned counter
+      if (bytesRead >= 2) {
+        uint16_t count = (respBytes[0] << 8) | respBytes[1];
+        result = "Count: ";
+        result += String(count);
+      }
+      break;
+    }
+
+    case RESP_RAW: {
+      // Raw bytes display
+      result = "Data: ";
+      for (uint8_t i = 0; i < bytesRead; i++) {
+        if (i > 0) result += " ";
+        if (respBytes[i] < 16) result += "0";
+        result += String(respBytes[i], HEX);
+      }
+      break;
+    }
+
+    default:
+      result = "Unknown";
+      break;
+  }
+
+  // Display on LCD
+  showTextBottom(result);
+
+  // Log to USB serial
+  Serial.print(F("[FPGA] "));
+  Serial.println(result);
 }
