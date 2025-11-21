@@ -56,7 +56,27 @@ String cmd = "";
 bool cmdReady = false;
 
 String fpgaBuffer = "";
-unsigned long fpgaBaud = 9600;
+
+#define NUM_REGISTERS 32
+uint32_t registers[NUM_REGISTERS];
+
+#define REG_TOP_COLOR    0x00
+#define REG_TOP_BGCOLOR  0x01
+#define REG_TOP_SIZE     0x02
+#define REG_BOT_COLOR    0x03
+#define REG_BOT_SIZE     0x04
+#define REG_FPGA_BAUD    0x05
+#define REG_FPGA_FRAME   0x06
+#define REG_ROTATION     0x07
+#define REG_FPGA_USER0   0x08
+#define REG_FPGA_USER1   0x09
+#define REG_FPGA_USER2   0x0A
+#define REG_FPGA_USER3   0x0B
+#define REG_FPGA_USER4   0x0C
+#define REG_FPGA_USER5   0x0D
+#define REG_FPGA_USER6   0x0E
+#define REG_FPGA_USER7   0x0F
+
 enum ResponseType {
   RESP_NONE,
   RESP_TEMP,
@@ -81,9 +101,25 @@ unsigned long lastTouch = 0;
 #define TOUCH_DEBOUNCE 200
 #define RESPONSE_TIMEOUT 500
 
+void initRegisters() {
+  registers[REG_TOP_COLOR] = 0xFFFF;
+  registers[REG_TOP_BGCOLOR] = 0x0000;
+  registers[REG_TOP_SIZE] = 2;
+  registers[REG_BOT_COLOR] = 0x07E0;
+  registers[REG_BOT_SIZE] = 1;
+  registers[REG_FPGA_BAUD] = 9600;
+  registers[REG_FPGA_FRAME] = 0;
+  registers[REG_ROTATION] = 0;
+  for (int i = REG_FPGA_USER0; i <= REG_FPGA_USER7; i++) {
+    registers[i] = 0;
+  }
+}
+
 void setup() {
+  initRegisters();
+
   Serial.begin(9600);
-  fpgaSerial.begin(fpgaBaud);
+  fpgaSerial.begin(registers[REG_FPGA_BAUD]);
 
   uint16_t ID = tft.readID();
   if (ID == 0xD3D3 || ID == 0x00D3) ID = 0x9341;
@@ -387,6 +423,27 @@ void processCmd(String c) {
     } else if (c == "#HIDEBTNS") {
       hideButtons();
 
+    } else if (c.startsWith("#W ")) {
+      String params = c.substring(3);
+      params.trim();
+      int sp = params.indexOf(' ');
+      if (sp > 0) {
+        uint8_t addr = strtol(params.substring(0, sp).c_str(), NULL, 16);
+        uint32_t value = strtoul(params.substring(sp + 1).c_str(), NULL, 16);
+        writeRegister(addr, value);
+      }
+
+    } else if (c.startsWith("#R ")) {
+      String params = c.substring(3);
+      params.trim();
+      uint8_t addr = strtol(params.c_str(), NULL, 16);
+      uint32_t value = readRegister(addr);
+      Serial.print(F("R"));
+      if (addr < 16) Serial.print(F("0"));
+      Serial.print(addr, HEX);
+      Serial.print(F("="));
+      Serial.println(value, HEX);
+
     } else if (c == "#HELP") {
       help();
     }
@@ -457,10 +514,11 @@ uint16_t getColorFromName(String& n) {
 }
 
 int sendHexBytes(String hexStr) {
+  uint8_t buffer[64];
   int byteCount = 0;
   int startIdx = 0;
 
-  while (startIdx < hexStr.length()) {
+  while (startIdx < hexStr.length() && byteCount < 64) {
     while (startIdx < hexStr.length() && hexStr[startIdx] == ' ') {
       startIdx++;
     }
@@ -481,13 +539,78 @@ int sendHexBytes(String hexStr) {
     if (hexByte.length() > 0) {
       long value = strtol(hexByte.c_str(), NULL, 16);
       if (value >= 0 && value <= 255) {
-        fpgaSerial.write((uint8_t)value);
-        byteCount++;
+        buffer[byteCount++] = (uint8_t)value;
       }
     }
     startIdx = endIdx;
   }
+
+  uint8_t mode = registers[REG_FPGA_FRAME] & 0xFF;
+  uint8_t termChar = (registers[REG_FPGA_FRAME] >> 8) & 0xFF;
+
+  if (mode == 1 || mode == 3) {
+    fpgaSerial.write((uint8_t)byteCount);
+  }
+
+  for (int i = 0; i < byteCount; i++) {
+    fpgaSerial.write(buffer[i]);
+  }
+
+  if (mode == 2 || mode == 3) {
+    fpgaSerial.write(termChar);
+  }
+
   return byteCount;
+}
+
+void writeRegister(uint8_t addr, uint32_t value) {
+  if (addr >= NUM_REGISTERS) return;
+  registers[addr] = value;
+
+  if (addr == REG_FPGA_BAUD) {
+    fpgaSerial.end();
+    fpgaSerial.begin(value);
+  } else if (addr == REG_TOP_COLOR) {
+    topTextColor = value & 0xFFFF;
+    textColor = topTextColor;
+  } else if (addr == REG_TOP_BGCOLOR) {
+    topBgColor = value & 0xFFFF;
+    bgColor = topBgColor;
+    topOpaqueText = true;
+    opaqueText = true;
+  } else if (addr == REG_TOP_SIZE) {
+    topTextSize = value & 0xFF;
+    textSize = topTextSize;
+  } else if (addr == REG_BOT_COLOR) {
+    bottomTextColor = value & 0xFFFF;
+  } else if (addr == REG_BOT_SIZE) {
+    bottomTextSize = value & 0xFF;
+  } else if (addr == REG_ROTATION) {
+    uint8_t rot = value & 0x03;
+    tft.setRotation(rot);
+    screenW = tft.width();
+    screenH = tft.height();
+    dividerY = screenH / 2;
+    topMaxY = dividerY - 2;
+    bottomMinY = dividerY + 2;
+    bottomMaxY = screenH;
+    tft.fillScreen(0);
+    topPosX = topPosY = 0;
+    bottomPosX = 0;
+    bottomPosY = bottomMinY;
+    posX = posY = 0;
+    drawDivider();
+    initButtons();
+    if (buttonsVisible) {
+      buttonsVisible = false;
+      showButtons();
+    }
+  }
+}
+
+uint32_t readRegister(uint8_t addr) {
+  if (addr >= NUM_REGISTERS) return 0;
+  return registers[addr];
 }
 
 void parseRect(String p) {
@@ -553,12 +676,20 @@ void parseProg(String p) {
 }
 
 void help() {
-  Serial.println(F("#CLR #SIZE #COLOR #BGCOLOR"));
-  Serial.println(F("#CLRBOT #CLRALL #BOTSIZE"));
-  Serial.println(F("#RECT #FILL #CIRCLE #LINE #PROG"));
+  Serial.println(F("=Registers="));
+  Serial.println(F("R00=TopColor R01=TopBgColor R02=TopSize"));
+  Serial.println(F("R03=BotColor R04=BotSize R05=FPGABaud"));
+  Serial.println(F("R06=FPGAFrame R07=Rotation"));
+  Serial.println(F("R08-R0F=FPGA User Registers"));
+  Serial.println(F("=Commands="));
+  Serial.println(F("#W addr val - Write register"));
+  Serial.println(F("#R addr - Read register"));
+  Serial.println(F("#CLR #CLRBOT #CLRALL"));
   Serial.println(F("#SHOWBTNS #HIDEBTNS"));
-  Serial.println(F("#FPGABAUD #FPGASEND #FPGABYTES"));
-  Serial.println(F("#ROT"));
+  Serial.println(F("#FPGABYTES hex - Send to FPGA"));
+  Serial.println(F(">>>text - FPGA passthrough"));
+  Serial.println(F("=Frame Modes="));
+  Serial.println(F("0=Raw 1=LenPrefix 2=Term 3=Both"));
 }
 
 void initButtons() {
