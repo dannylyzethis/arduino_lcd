@@ -161,6 +161,8 @@ void setup() {
   cmd.reserve(100);
   fpgaBuffer.reserve(80);
   initButtons();
+
+  Serial.println(F("READY"));
 }
 
 void loop() {
@@ -535,8 +537,12 @@ uint16_t getColorFromName(String& n) {
   if (n == "RED") return 0xF800;
   if (n == "GREEN") return 0x07E0;
   if (n == "BLUE") return 0x001F;
+  if (n == "CYAN") return 0x07FF;
+  if (n == "MAGENTA") return 0xF81F;
+  if (n == "YELLOW") return 0xFFE0;
   if (n == "WHITE") return 0xFFFF;
   if (n == "BLACK") return 0x0000;
+  if (n == "ORANGE") return 0xFD20;
   return 0xFFFF;
 }
 
