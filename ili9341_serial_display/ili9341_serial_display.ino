@@ -121,9 +121,6 @@ unsigned long lastTouch = 0;
 
 void setup() {
   Serial.begin(9600);
-  Serial.println(F("ILI9341 Split Screen Ready"));
-
-  // Initialize FPGA serial
   fpgaSerial.begin(fpgaBaud);
 
   // Initialize display
@@ -164,7 +161,6 @@ void setup() {
   cmd.reserve(100);
   fpgaBuffer.reserve(80);
   initButtons();
-  Serial.println(F("Ready"));
 }
 
 void loop() {
@@ -345,7 +341,6 @@ void processCmd(String c) {
     String data = c.substring(3);
     data.trim();
     fpgaSerial.println(data);
-    Serial.println(F("OK"));
     return;
   }
 
@@ -357,7 +352,6 @@ void processCmd(String c) {
       topPosX = topPosY = 0;
       posX = posY = 0;
       drawDivider();
-      Serial.println(F("OK"));
       
     } else if (c.startsWith("#COLOR ")) {
       String col = c.substring(7);
@@ -373,7 +367,6 @@ void processCmd(String c) {
         topTextSize = s;
         textSize = s;
         tft.setTextSize(s);
-        Serial.println(s);
       }
       
     } else if (c.startsWith("#POS ")) {
@@ -384,17 +377,10 @@ void processCmd(String c) {
         posX = topPosX;
         posY = topPosY;
         tft.setCursor(topPosX, topPosY);
-        Serial.println(F("OK"));
       }
-      
+
     } else if (c == "#INFO") {
-      Serial.print(screenW);
-      Serial.print('x');
-      Serial.print(screenH);
-      Serial.print(F(" T:"));
-      Serial.print(topTextSize);
-      Serial.print(F(" B:"));
-      Serial.println(bottomTextSize);
+      ;
 
     } else if (c.startsWith("#RECT ")) {
       parseRect(c.substring(6));
@@ -424,21 +410,13 @@ void processCmd(String c) {
         bottomPosY = bottomMinY;
         posX = posY = 0;
         drawDivider();
-        Serial.println(r);
       }
-      
-    } else if (c.startsWith("#PROG ")) {
-      parseProg(c.substring(6));
-      
-    } else if (c == "#TEST") {
-      testWrap();
 
     } else if (c == "#CLRBOT") {
       tft.fillRect(0, bottomMinY, screenW, bottomMaxY - bottomMinY, 0x0000);
       bottomPosX = 0;
       bottomPosY = bottomMinY;
       drawDivider();
-      Serial.println(F("OK"));
 
     } else if (c == "#CLRALL") {
       tft.fillScreen(0);
@@ -447,13 +425,11 @@ void processCmd(String c) {
       bottomPosY = bottomMinY;
       posX = posY = 0;
       drawDivider();
-      Serial.println(F("OK"));
 
     } else if (c.startsWith("#BOTSIZE ")) {
       int s = c.substring(9).toInt();
       if (s >= 1 && s <= 5) {
         bottomTextSize = s;
-        Serial.println(s);
       }
 
     } else if (c.startsWith("#BOTCOLOR ")) {
@@ -466,31 +442,25 @@ void processCmd(String c) {
         fpgaBaud = baud;
         fpgaSerial.end();
         fpgaSerial.begin(fpgaBaud);
-        Serial.println(baud);
       }
 
     } else if (c.startsWith("#FPGASEND ")) {
       String data = c.substring(10);
       fpgaSerial.println(data);
-      Serial.println(F("OK"));
 
     } else if (c == "#FPGAPING") {
       fpgaSerial.println(F("PING"));
-      Serial.println(F("OK"));
 
     } else if (c.startsWith("#FPGABYTES ")) {
       String hexData = c.substring(11);
       hexData.trim();
-      int bytesSent = sendHexBytes(hexData);
-      Serial.println(bytesSent);
+      sendHexBytes(hexData);
 
     } else if (c == "#SHOWBTNS") {
       showButtons();
-      Serial.println(F("OK"));
 
     } else if (c == "#HIDEBTNS") {
       hideButtons();
-      Serial.println(F("OK"));
 
     } else if (c == "#HELP") {
       help();
@@ -528,7 +498,6 @@ void setCol(String& n) {
     topTextColor = c;
     textColor = c;
     updateTextColors();
-    Serial.println(F("OK"));
   }
 }
 
@@ -539,7 +508,6 @@ void setBgCol(String& n) {
     topOpaqueText = false;
     opaqueText = false;
     updateTextColors();
-    Serial.println(F("OK"));
     return;
   }
   uint16_t c = getColorFromName(n);
@@ -549,7 +517,6 @@ void setBgCol(String& n) {
     bgColor = c;
     opaqueText = true;
     updateTextColors();
-    Serial.println(F("OK"));
   }
 }
 
@@ -558,23 +525,16 @@ void setBotCol(String& n) {
   uint16_t c = getColorFromName(n);
   if (c != 0xFFFF || n == "WHITE") {
     bottomTextColor = c;
-    Serial.println(F("OK"));
   }
 }
 
-// Get color from name
 uint16_t getColorFromName(String& n) {
   if (n == "RED") return 0xF800;
-  else if (n == "GREEN") return 0x07E0;
-  else if (n == "BLUE") return 0x001F;
-  else if (n == "YELLOW") return 0xFFE0;
-  else if (n == "CYAN") return 0x07FF;
-  else if (n == "MAGENTA") return 0xF81F;
-  else if (n == "WHITE") return 0xFFFF;
-  else if (n == "BLACK") return 0x0000;
-  else if (n == "ORANGE") return 0xFD20;
-  else if (n == "PINK") return 0xF81F;
-  return 0xFFFF; // Default to white if invalid, but could ignore
+  if (n == "GREEN") return 0x07E0;
+  if (n == "BLUE") return 0x001F;
+  if (n == "WHITE") return 0xFFFF;
+  if (n == "BLACK") return 0x0000;
+  return 0xFFFF;
 }
 
 int sendHexBytes(String hexStr) {
@@ -619,10 +579,7 @@ void parseRect(String p) {
       last = j;
     }
   }
-  if (i == 4) {
-    tft.drawRect(v[0], v[1], v[2], v[3], textColor);
-    Serial.println(F("OK"));
-  }
+  if (i == 4) tft.drawRect(v[0], v[1], v[2], v[3], textColor);
 }
 
 void parseFill(String p) {
@@ -633,10 +590,7 @@ void parseFill(String p) {
       last = j;
     }
   }
-  if (i == 4) {
-    tft.fillRect(v[0], v[1], v[2], v[3], textColor);
-    Serial.println(F("OK"));
-  }
+  if (i == 4) tft.fillRect(v[0], v[1], v[2], v[3], textColor);
 }
 
 void parseCirc(String p) {
@@ -647,10 +601,7 @@ void parseCirc(String p) {
       last = j;
     }
   }
-  if (i == 3) {
-    tft.drawCircle(v[0], v[1], v[2], textColor);
-    Serial.println(F("OK"));
-  }
+  if (i == 3) tft.drawCircle(v[0], v[1], v[2], textColor);
 }
 
 void parseLine(String p) {
@@ -661,50 +612,11 @@ void parseLine(String p) {
       last = j;
     }
   }
-  if (i == 4) {
-    tft.drawLine(v[0], v[1], v[2], v[3], textColor);
-    Serial.println(F("OK"));
-  }
+  if (i == 4) tft.drawLine(v[0], v[1], v[2], v[3], textColor);
 }
 
-void parseProg(String p) {
-  int v[5], i = 0, last = -1;
-  for (int j = 0; j <= p.length() && i < 5; j++) {
-    if (j == p.length() || p[j] == ' ') {
-      v[i++] = p.substring(last + 1, j).toInt();
-      last = j;
-    }
-  }
-  if (i == 5) {
-    int pct = constrain(v[4], 0, 100);
-    int fw = (v[2] * pct) / 100;
-    tft.drawRect(v[0], v[1], v[2], v[3], textColor);
-    if (fw > 2) {
-      tft.fillRect(v[0]+1, v[1]+1, fw-2, v[3]-2, textColor);
-    }
-    Serial.println(pct);
-  }
-}
-
-void testWrap() {
-  showText("Short");
-  delay(500);
-  showText("Medium length text here");
-  delay(500);
-  showText("This is a very long text that will wrap to multiple lines and test our wrapping fix");
-  delay(500);
-  showText("After wrap");
-  Serial.println(F("OK"));
-}
-
-// Help - compact
 void help() {
-  Serial.println(F("#CLR #COLOR #SIZE #POS"));
-  Serial.println(F("#CLRBOT #CLRALL #BOTSIZE"));
-  Serial.println(F("#FPGASEND #FPGABYTES"));
-  Serial.println(F("#SHOWBTNS #HIDEBTNS"));
-  Serial.println(F("#RECT #FILL #CIRCLE #LINE"));
-  Serial.println(F("#INFO #TEST #ROT"));
+  Serial.println(F("#CLR #SIZE #SHOWBTNS"));
 }
 
 // Initialize button layout
@@ -716,61 +628,57 @@ void initButtons() {
   uint16_t btnY = bottomMaxY - btnHeight - 2;
   buttonTextY = btnY - 2;  // Text area ends just above buttons
 
-  // TEMP button - Query temperature
   buttons[0].x = 5;
   buttons[0].y = btnY;
   buttons[0].w = btnWidth;
   buttons[0].h = btnHeight;
-  buttons[0].label = "TMP";
-  buttons[0].cmdBytes[0] = 0x54;  // 'T'
-  buttons[0].cmdBytes[1] = 0x45;  // 'E'
-  buttons[0].cmdBytes[2] = 0x4D;  // 'M'
-  buttons[0].cmdBytes[3] = 0x50;  // 'P'
+  buttons[0].label = "T";
+  buttons[0].cmdBytes[0] = 0x54;
+  buttons[0].cmdBytes[1] = 0x45;
+  buttons[0].cmdBytes[2] = 0x4D;
+  buttons[0].cmdBytes[3] = 0x50;
   buttons[0].cmdLen = 4;
   buttons[0].respType = RESP_TEMP;
-  buttons[0].color = 0xFD20;  // Orange
+  buttons[0].color = 0xFD20;
 
-  // STATUS button - Query status
   buttons[1].x = 5 + btnWidth + 2;
   buttons[1].y = btnY;
   buttons[1].w = btnWidth;
   buttons[1].h = btnHeight;
-  buttons[1].label = "STAT";
-  buttons[1].cmdBytes[0] = 0x53;  // 'S'
-  buttons[1].cmdBytes[1] = 0x54;  // 'T'
-  buttons[1].cmdBytes[2] = 0x41;  // 'A'
-  buttons[1].cmdBytes[3] = 0x54;  // 'T'
+  buttons[1].label = "S";
+  buttons[1].cmdBytes[0] = 0x53;
+  buttons[1].cmdBytes[1] = 0x54;
+  buttons[1].cmdBytes[2] = 0x41;
+  buttons[1].cmdBytes[3] = 0x54;
   buttons[1].cmdLen = 4;
   buttons[1].respType = RESP_STATUS;
-  buttons[1].color = 0x07E0;  // Green
+  buttons[1].color = 0x07E0;
 
-  // COUNTER button - Query counter
   buttons[2].x = 5 + (btnWidth + 2) * 2;
   buttons[2].y = btnY;
   buttons[2].w = btnWidth;
   buttons[2].h = btnHeight;
-  buttons[2].label = "CNT";
-  buttons[2].cmdBytes[0] = 0x43;  // 'C'
-  buttons[2].cmdBytes[1] = 0x4E;  // 'N'
-  buttons[2].cmdBytes[2] = 0x54;  // 'T'
-  buttons[2].cmdBytes[3] = 0x52;  // 'R'
+  buttons[2].label = "C";
+  buttons[2].cmdBytes[0] = 0x43;
+  buttons[2].cmdBytes[1] = 0x4E;
+  buttons[2].cmdBytes[2] = 0x54;
+  buttons[2].cmdBytes[3] = 0x52;
   buttons[2].cmdLen = 4;
   buttons[2].respType = RESP_COUNTER;
-  buttons[2].color = 0x07FF;  // Cyan
+  buttons[2].color = 0x07FF;
 
-  // DATA button - Query raw data
   buttons[3].x = 5 + (btnWidth + 2) * 3;
   buttons[3].y = btnY;
   buttons[3].w = btnWidth;
   buttons[3].h = btnHeight;
-  buttons[3].label = "DATA";
-  buttons[3].cmdBytes[0] = 0x44;  // 'D'
-  buttons[3].cmdBytes[1] = 0x41;  // 'A'
-  buttons[3].cmdBytes[2] = 0x54;  // 'T'
-  buttons[3].cmdBytes[3] = 0x41;  // 'A'
+  buttons[3].label = "D";
+  buttons[3].cmdBytes[0] = 0x44;
+  buttons[3].cmdBytes[1] = 0x41;
+  buttons[3].cmdBytes[2] = 0x54;
+  buttons[3].cmdBytes[3] = 0x41;
   buttons[3].cmdLen = 4;
   buttons[3].respType = RESP_RAW;
-  buttons[3].color = 0x001F;  // Blue
+  buttons[3].color = 0x001F;
 }
 
 // Draw a single button
