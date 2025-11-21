@@ -393,7 +393,10 @@ void processCmd(String c) {
       
     } else if (c.startsWith("#FILL ")) {
       parseFill(c.substring(6));
-      
+
+    } else if (c.startsWith("#PROG ")) {
+      parseProg(c.substring(6));
+
     } else if (c.startsWith("#ROT")) {
       int r = c.substring(4).toInt();
       if (r >= 0 && r <= 3) {
@@ -615,6 +618,24 @@ void parseLine(String p) {
   if (i == 4) tft.drawLine(v[0], v[1], v[2], v[3], textColor);
 }
 
+void parseProg(String p) {
+  int v[5], i = 0, last = -1;
+  for (int j = 0; j <= p.length() && i < 5; j++) {
+    if (j == p.length() || p[j] == ' ') {
+      v[i++] = p.substring(last + 1, j).toInt();
+      last = j;
+    }
+  }
+  if (i == 5) {
+    int pct = constrain(v[4], 0, 100);
+    int fw = (v[2] * pct) / 100;
+    tft.drawRect(v[0], v[1], v[2], v[3], textColor);
+    if (fw > 2) {
+      tft.fillRect(v[0]+1, v[1]+1, fw-2, v[3]-2, textColor);
+    }
+  }
+}
+
 void help() {
   Serial.println(F("=Display="));
   Serial.println(F("#CLR #SIZE #COLOR #BGCOLOR #POS"));
@@ -624,6 +645,7 @@ void help() {
   Serial.println(F("#FILL x y w h"));
   Serial.println(F("#CIRCLE x y r"));
   Serial.println(F("#LINE x1 y1 x2 y2"));
+  Serial.println(F("#PROG x y w h %"));
   Serial.println(F("=FPGA="));
   Serial.println(F("#SHOWBTNS #HIDEBTNS"));
   Serial.println(F("#FPGASEND txt"));
