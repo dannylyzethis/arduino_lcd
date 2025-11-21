@@ -381,9 +381,6 @@ void processCmd(String c) {
         tft.setCursor(topPosX, topPosY);
       }
 
-    } else if (c == "#INFO") {
-      ;
-
     } else if (c.startsWith("#RECT ")) {
       parseRect(c.substring(6));
       
@@ -652,23 +649,12 @@ void parseProg(String p) {
 }
 
 void help() {
-  Serial.println(F("=Display="));
-  Serial.println(F("#CLR #SIZE #COLOR #BGCOLOR #POS"));
-  Serial.println(F("#CLRBOT #CLRALL #BOTSIZE #BOTCOLOR"));
-  Serial.println(F("=Graphics="));
-  Serial.println(F("#RECT x y w h"));
-  Serial.println(F("#FILL x y w h"));
-  Serial.println(F("#CIRCLE x y r"));
-  Serial.println(F("#LINE x1 y1 x2 y2"));
-  Serial.println(F("#PROG x y w h %"));
-  Serial.println(F("=FPGA="));
+  Serial.println(F("#CLR #SIZE #COLOR #BGCOLOR"));
+  Serial.println(F("#CLRBOT #CLRALL #BOTSIZE"));
+  Serial.println(F("#RECT #FILL #CIRCLE #LINE #PROG"));
   Serial.println(F("#SHOWBTNS #HIDEBTNS"));
-  Serial.println(F("#FPGABAUD rate"));
-  Serial.println(F("#FPGASEND txt"));
-  Serial.println(F("#FPGABYTES hex"));
-  Serial.println(F(">>> forward"));
-  Serial.println(F("=Other="));
-  Serial.println(F("#ROT #INFO #ID"));
+  Serial.println(F("#FPGABAUD #FPGASEND #FPGABYTES"));
+  Serial.println(F("#ROT #ID"));
 }
 
 // Initialize button layout
