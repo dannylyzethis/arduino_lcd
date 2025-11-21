@@ -307,23 +307,7 @@ void processCmd(String c) {
       topPosX = topPosY = 0;
       posX = posY = 0;
       drawDivider();
-      
-    } else if (c.startsWith("#COLOR ")) {
-      String col = c.substring(7);
-      setCol(col);
-      
-    } else if (c.startsWith("#BGCOLOR ")) {
-      String col = c.substring(9);
-      setBgCol(col);
-      
-    } else if (c.startsWith("#SIZE ")) {
-      int s = c.substring(6).toInt();
-      if (s >= 1 && s <= 5) {
-        topTextSize = s;
-        textSize = s;
-        tft.setTextSize(s);
-      }
-      
+
     } else if (c.startsWith("#POS ")) {
       int sp = c.indexOf(' ', 5);
       if (sp > 0) {
@@ -349,30 +333,6 @@ void processCmd(String c) {
     } else if (c.startsWith("#PROG ")) {
       parseProg(c.substring(6));
 
-    } else if (c.startsWith("#ROT")) {
-      int r = c.substring(4).toInt();
-      if (r >= 0 && r <= 3) {
-        tft.setRotation(r);
-        screenW = tft.width();
-        screenH = tft.height();
-        dividerY = screenH / 2;
-        topMaxY = dividerY - 2;
-        bottomMinY = dividerY + 2;
-        bottomMaxY = screenH;
-        tft.fillScreen(0);
-        topPosX = topPosY = 0;
-        bottomPosX = 0;
-        bottomPosY = bottomMinY;
-        posX = posY = 0;
-        drawDivider();
-
-        initButtons();
-        if (buttonsVisible) {
-          buttonsVisible = false;  // Reset flag
-          showButtons();           // Redraw with new positions
-        }
-      }
-
     } else if (c == "#CLRBOT") {
       tft.fillRect(0, bottomMinY, screenW, bottomMaxY - bottomMinY, 0x0000);
       bottomPosX = 0;
@@ -386,24 +346,6 @@ void processCmd(String c) {
       bottomPosY = bottomMinY;
       posX = posY = 0;
       drawDivider();
-
-    } else if (c.startsWith("#BOTSIZE ")) {
-      int s = c.substring(9).toInt();
-      if (s >= 1 && s <= 5) {
-        bottomTextSize = s;
-      }
-
-    } else if (c.startsWith("#BOTCOLOR ")) {
-      String col = c.substring(10);
-      setBotCol(col);
-
-    } else if (c.startsWith("#FPGABAUD ")) {
-      unsigned long baud = c.substring(10).toInt();
-      if (baud >= 300 && baud <= 115200) {
-        fpgaBaud = baud;
-        fpgaSerial.end();
-        fpgaSerial.begin(fpgaBaud);
-      }
 
     } else if (c.startsWith("#FPGASEND ")) {
       String data = c.substring(10);
@@ -450,67 +392,6 @@ void processCmd(String c) {
   } else {
     showText(c);
   }
-}
-
-void updateTextColors() {
-  if (topOpaqueText) {
-    tft.setTextColor(topTextColor, topBgColor);
-  } else {
-    tft.setTextColor(topTextColor);
-  }
-  textColor = topTextColor;
-  bgColor = topBgColor;
-  opaqueText = topOpaqueText;
-}
-
-void setCol(String& n) {
-  n.toUpperCase();
-  uint16_t c = getColorFromName(n);
-  if (c != 0xFFFF || n == "WHITE") {
-    topTextColor = c;
-    textColor = c;
-    updateTextColors();
-  }
-}
-
-void setBgCol(String& n) {
-  n.trim();
-  n.toUpperCase();
-  if (n == "NONE") {
-    topOpaqueText = false;
-    opaqueText = false;
-    updateTextColors();
-    return;
-  }
-  uint16_t c = getColorFromName(n);
-  if (c != 0xFFFF || n == "WHITE") {
-    topBgColor = c;
-    topOpaqueText = true;
-    bgColor = c;
-    opaqueText = true;
-    updateTextColors();
-  }
-}
-
-void setBotCol(String& n) {
-  n.toUpperCase();
-  uint16_t c = getColorFromName(n);
-  if (c != 0xFFFF || n == "WHITE") {
-    bottomTextColor = c;
-  }
-}
-
-uint16_t getColorFromName(String& n) {
-  if (n == "RED") return 0xF800;
-  if (n == "GREEN") return 0x07E0;
-  if (n == "BLUE") return 0x001F;
-  if (n == "CYAN") return 0x07FF;
-  if (n == "MAGENTA") return 0xF81F;
-  if (n == "YELLOW") return 0xFFE0;
-  if (n == "WHITE") return 0xFFFF;
-  if (n == "BLACK") return 0x0000;
-  if (n == "ORANGE") return 0xFD20;
-  return 0xFFFF;
 }
 
 int sendHexBytes(String hexStr) {
