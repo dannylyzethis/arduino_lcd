@@ -163,13 +163,8 @@ void setup() {
 
   cmd.reserve(100);
   fpgaBuffer.reserve(80);
-
-  // Initialize touch buttons
   initButtons();
-
-  Serial.println(F("Top: Serial Cmds"));
-  Serial.println(F("Bottom: FPGA"));
-  Serial.println(F("Touch buttons: #SHOWBTNS"));
+  Serial.println(F("Ready"));
 }
 
 void loop() {
@@ -283,18 +278,13 @@ void showText(const String& txt) {
   }
 
   topPosY = tft.getCursorY();
-  if (topPosY >= topMaxY) topPosY = 0; // Wrap around
+  if (topPosY >= topMaxY) topPosY = 0;
   topPosX = 0;
 
-  // Update legacy variables
   posY = topPosY;
   posX = topPosX;
   textSize = topTextSize;
   textColor = topTextColor;
-
-  Serial.print(lines);
-  Serial.print(F("L: "));
-  Serial.println(txt);
 }
 
 // Display text in TOP section (simple wrapper)
@@ -351,13 +341,11 @@ void showTextBottom(const String& txt) {
 void processCmd(String c) {
   c.trim();
 
-  // Direct FPGA forwarding with >>> prefix
   if (c.startsWith(">>>")) {
     String data = c.substring(3);
     data.trim();
     fpgaSerial.println(data);
-    Serial.print(F("[FPGA>] "));
-    Serial.println(data);
+    Serial.println(F("OK"));
     return;
   }
 
@@ -369,7 +357,7 @@ void processCmd(String c) {
       topPosX = topPosY = 0;
       posX = posY = 0;
       drawDivider();
-      Serial.println(F("CLR Top"));
+      Serial.println(F("OK"));
       
     } else if (c.startsWith("#COLOR ")) {
       String col = c.substring(7);
@@ -385,7 +373,6 @@ void processCmd(String c) {
         topTextSize = s;
         textSize = s;
         tft.setTextSize(s);
-        Serial.print(F("Top Size:"));
         Serial.println(s);
       }
       
@@ -397,36 +384,17 @@ void processCmd(String c) {
         posX = topPosX;
         posY = topPosY;
         tft.setCursor(topPosX, topPosY);
-        Serial.println(F("Top Pos"));
+        Serial.println(F("OK"));
       }
       
     } else if (c == "#INFO") {
-      Serial.print(F("Res:"));
       Serial.print(screenW);
       Serial.print('x');
-      Serial.println(screenH);
-      Serial.print(F("Divider Y:"));
-      Serial.println(dividerY);
-      Serial.println(F("== TOP =="));
-      Serial.print(F("Pos:"));
-      Serial.print(topPosX);
-      Serial.print(',');
-      Serial.println(topPosY);
-      Serial.print(F("Sz:"));
-      Serial.println(topTextSize);
-      Serial.print(F("Col:0x"));
-      Serial.println(topTextColor, HEX);
-      Serial.println(F("== BOTTOM =="));
-      Serial.print(F("Pos:"));
-      Serial.print(bottomPosX);
-      Serial.print(',');
-      Serial.println(bottomPosY);
-      Serial.print(F("Sz:"));
+      Serial.print(screenH);
+      Serial.print(F(" T:"));
+      Serial.print(topTextSize);
+      Serial.print(F(" B:"));
       Serial.println(bottomTextSize);
-      Serial.print(F("Col:0x"));
-      Serial.println(bottomTextColor, HEX);
-      Serial.print(F("FPGA Baud:"));
-      Serial.println(fpgaBaud);
 
     } else if (c.startsWith("#RECT ")) {
       parseRect(c.substring(6));
@@ -446,7 +414,6 @@ void processCmd(String c) {
         tft.setRotation(r);
         screenW = tft.width();
         screenH = tft.height();
-        // Recalculate split screen
         dividerY = screenH / 2;
         topMaxY = dividerY - 2;
         bottomMinY = dividerY + 2;
@@ -457,7 +424,6 @@ void processCmd(String c) {
         bottomPosY = bottomMinY;
         posX = posY = 0;
         drawDivider();
-        Serial.print(F("Rot:"));
         Serial.println(r);
       }
       
@@ -472,7 +438,7 @@ void processCmd(String c) {
       bottomPosX = 0;
       bottomPosY = bottomMinY;
       drawDivider();
-      Serial.println(F("CLR Bot"));
+      Serial.println(F("OK"));
 
     } else if (c == "#CLRALL") {
       tft.fillScreen(0);
@@ -481,13 +447,12 @@ void processCmd(String c) {
       bottomPosY = bottomMinY;
       posX = posY = 0;
       drawDivider();
-      Serial.println(F("CLR All"));
+      Serial.println(F("OK"));
 
     } else if (c.startsWith("#BOTSIZE ")) {
       int s = c.substring(9).toInt();
       if (s >= 1 && s <= 5) {
         bottomTextSize = s;
-        Serial.print(F("Bot Size:"));
         Serial.println(s);
       }
 
@@ -501,36 +466,31 @@ void processCmd(String c) {
         fpgaBaud = baud;
         fpgaSerial.end();
         fpgaSerial.begin(fpgaBaud);
-        Serial.print(F("FPGA Baud:"));
         Serial.println(baud);
       }
 
     } else if (c.startsWith("#FPGASEND ")) {
       String data = c.substring(10);
       fpgaSerial.println(data);
-      Serial.print(F("Sent to FPGA: "));
-      Serial.println(data);
+      Serial.println(F("OK"));
 
     } else if (c == "#FPGAPING") {
       fpgaSerial.println(F("PING"));
-      Serial.println(F("Ping sent to FPGA"));
+      Serial.println(F("OK"));
 
     } else if (c.startsWith("#FPGABYTES ")) {
-      // Send raw bytes: #FPGABYTES 48 45 4C 4C 4F
       String hexData = c.substring(11);
       hexData.trim();
       int bytesSent = sendHexBytes(hexData);
-      Serial.print(F("Sent "));
-      Serial.print(bytesSent);
-      Serial.println(F(" bytes to FPGA"));
+      Serial.println(bytesSent);
 
     } else if (c == "#SHOWBTNS") {
       showButtons();
-      Serial.println(F("Touch buttons shown"));
+      Serial.println(F("OK"));
 
     } else if (c == "#HIDEBTNS") {
       hideButtons();
-      Serial.println(F("Touch buttons hidden"));
+      Serial.println(F("OK"));
 
     } else if (c == "#HELP") {
       help();
@@ -561,7 +521,6 @@ void updateTextColors() {
   opaqueText = topOpaqueText;
 }
 
-// Color setting (top section)
 void setCol(String& n) {
   n.toUpperCase();
   uint16_t c = getColorFromName(n);
@@ -569,12 +528,10 @@ void setCol(String& n) {
     topTextColor = c;
     textColor = c;
     updateTextColors();
-    Serial.print(F("Top Col:"));
-    Serial.println(n);
+    Serial.println(F("OK"));
   }
 }
 
-// Background color setting (top section)
 void setBgCol(String& n) {
   n.trim();
   n.toUpperCase();
@@ -582,7 +539,7 @@ void setBgCol(String& n) {
     topOpaqueText = false;
     opaqueText = false;
     updateTextColors();
-    Serial.println(F("Top Bg:None"));
+    Serial.println(F("OK"));
     return;
   }
   uint16_t c = getColorFromName(n);
@@ -592,19 +549,16 @@ void setBgCol(String& n) {
     bgColor = c;
     opaqueText = true;
     updateTextColors();
-    Serial.print(F("Top BgCol:"));
-    Serial.println(n);
+    Serial.println(F("OK"));
   }
 }
 
-// Color setting for bottom section
 void setBotCol(String& n) {
   n.toUpperCase();
   uint16_t c = getColorFromName(n);
   if (c != 0xFFFF || n == "WHITE") {
     bottomTextColor = c;
-    Serial.print(F("Bot Col:"));
-    Serial.println(n);
+    Serial.println(F("OK"));
   }
 }
 
@@ -623,61 +577,40 @@ uint16_t getColorFromName(String& n) {
   return 0xFFFF; // Default to white if invalid, but could ignore
 }
 
-// Send raw hex bytes to FPGA
-// Format: space-separated hex values (e.g., "48 45 4C 4C 4F" or "0x48 0x45")
 int sendHexBytes(String hexStr) {
   int byteCount = 0;
   int startIdx = 0;
 
   while (startIdx < hexStr.length()) {
-    // Skip whitespace
     while (startIdx < hexStr.length() && hexStr[startIdx] == ' ') {
       startIdx++;
     }
-
     if (startIdx >= hexStr.length()) break;
 
-    // Find end of this hex number
     int endIdx = startIdx;
     while (endIdx < hexStr.length() && hexStr[endIdx] != ' ') {
       endIdx++;
     }
 
-    // Extract hex string
     String hexByte = hexStr.substring(startIdx, endIdx);
     hexByte.trim();
 
-    // Skip "0x" or "0X" prefix if present
     if (hexByte.startsWith("0x") || hexByte.startsWith("0X")) {
       hexByte = hexByte.substring(2);
     }
 
-    // Convert to byte and send
     if (hexByte.length() > 0) {
       long value = strtol(hexByte.c_str(), NULL, 16);
       if (value >= 0 && value <= 255) {
         fpgaSerial.write((uint8_t)value);
         byteCount++;
-
-        // Echo to Serial for confirmation
-        if (byteCount > 1) Serial.print(F(" "));
-        Serial.print(F("0x"));
-        if (value < 16) Serial.print(F("0"));
-        Serial.print(value, HEX);
       }
     }
-
     startIdx = endIdx;
   }
-
-  if (byteCount > 0) {
-    Serial.println();
-  }
-
   return byteCount;
 }
 
-// Shape parsing - compact
 void parseRect(String p) {
   int v[4], i = 0, last = -1;
   for (int j = 0; j <= p.length() && i < 4; j++) {
@@ -688,7 +621,7 @@ void parseRect(String p) {
   }
   if (i == 4) {
     tft.drawRect(v[0], v[1], v[2], v[3], textColor);
-    Serial.println(F("Rect"));
+    Serial.println(F("OK"));
   }
 }
 
@@ -702,7 +635,7 @@ void parseFill(String p) {
   }
   if (i == 4) {
     tft.fillRect(v[0], v[1], v[2], v[3], textColor);
-    Serial.println(F("Fill"));
+    Serial.println(F("OK"));
   }
 }
 
@@ -716,7 +649,7 @@ void parseCirc(String p) {
   }
   if (i == 3) {
     tft.drawCircle(v[0], v[1], v[2], textColor);
-    Serial.println(F("Circ"));
+    Serial.println(F("OK"));
   }
 }
 
@@ -730,7 +663,7 @@ void parseLine(String p) {
   }
   if (i == 4) {
     tft.drawLine(v[0], v[1], v[2], v[3], textColor);
-    Serial.println(F("Line"));
+    Serial.println(F("OK"));
   }
 }
 
@@ -749,14 +682,11 @@ void parseProg(String p) {
     if (fw > 2) {
       tft.fillRect(v[0]+1, v[1]+1, fw-2, v[3]-2, textColor);
     }
-    Serial.print(pct);
-    Serial.println(F("%"));
+    Serial.println(pct);
   }
 }
 
-// Test wrapping
 void testWrap() {
-  Serial.println(F("Test..."));
   showText("Short");
   delay(500);
   showText("Medium length text here");
@@ -764,49 +694,17 @@ void testWrap() {
   showText("This is a very long text that will wrap to multiple lines and test our wrapping fix");
   delay(500);
   showText("After wrap");
-  Serial.println(F("Done"));
+  Serial.println(F("OK"));
 }
 
 // Help - compact
 void help() {
-  Serial.println(F("== LCD Split Screen =="));
-  Serial.println(F("Text: type & enter"));
-  Serial.println(F("== TOP Section =="));
-  Serial.println(F("#CLR - Clear top"));
-  Serial.println(F("#COLOR <name>"));
-  Serial.println(F("#BGCOLOR <name|NONE>"));
-  Serial.println(F("#SIZE <1-5>"));
-  Serial.println(F("#POS <x> <y>"));
-  Serial.println(F("== BOTTOM (FPGA) =="));
-  Serial.println(F("#CLRBOT - Clear bot"));
-  Serial.println(F("#CLRALL - Clear all"));
-  Serial.println(F("#BOTSIZE <1-5>"));
-  Serial.println(F("#BOTCOLOR <name>"));
-  Serial.println(F("#FPGABAUD <rate>"));
-  Serial.println(F("#FPGASEND <data> - Send text"));
-  Serial.println(F("#FPGABYTES <hex> - Send raw bytes"));
-  Serial.println(F("  (e.g. 48 45 4C or 0x48 0x45)"));
-  Serial.println(F("#FPGAPING - Send ping"));
-  Serial.println(F(">>> <data> - Direct forward"));
-  Serial.println(F("  (Response auto to USB)"));
-  Serial.println(F("== Touch Buttons =="));
-  Serial.println(F("#SHOWBTNS - Show touch buttons"));
-  Serial.println(F("#HIDEBTNS - Hide touch buttons"));
-  Serial.println(F("  TMP: Query temp (2 bytes)"));
-  Serial.println(F("  STAT: Query status (1 byte)"));
-  Serial.println(F("  CNT: Query counter (2 bytes)"));
-  Serial.println(F("  DATA: Query raw data (4 bytes)"));
-  Serial.println(F("== Graphics =="));
-  Serial.println(F("#RECT <x y w h>"));
-  Serial.println(F("#FILL <x y w h>"));
-  Serial.println(F("#CIRCLE <x y r>"));
-  Serial.println(F("#LINE <x1 y1 x2 y2>"));
-  Serial.println(F("#PROG <x y w h %>"));
-  Serial.println(F("== Other =="));
-  Serial.println(F("#ROT <0-3>"));
-  Serial.println(F("#TEST - Test wrap"));
-  Serial.println(F("#INFO - Settings"));
-  Serial.println(F("#ID - COM LCD"));
+  Serial.println(F("#CLR #COLOR #SIZE #POS"));
+  Serial.println(F("#CLRBOT #CLRALL #BOTSIZE"));
+  Serial.println(F("#FPGASEND #FPGABYTES"));
+  Serial.println(F("#SHOWBTNS #HIDEBTNS"));
+  Serial.println(F("#RECT #FILL #CIRCLE #LINE"));
+  Serial.println(F("#INFO #TEST #ROT"));
 }
 
 // Initialize button layout
@@ -991,16 +889,8 @@ void handleButtonPress(uint8_t btnIdx) {
   }
 
   // Log to USB serial
-  Serial.print(F("[BTN>] "));
-  Serial.print(btn.label);
-  Serial.print(F(" = "));
-  for (uint8_t i = 0; i < btn.cmdLen; i++) {
-    if (i > 0) Serial.print(F(" "));
-    Serial.print(F("0x"));
-    if (btn.cmdBytes[i] < 16) Serial.print(F("0"));
-    Serial.print(btn.cmdBytes[i], HEX);
-  }
-  Serial.println();
+  Serial.print(F("[B] "));
+  Serial.println(btn.label);
 
   // Wait for and process response
   if (btn.respType != RESP_NONE) {
@@ -1033,8 +923,7 @@ void processButtonResponse(Button &btn) {
 
   // Check if we got a response
   if (bytesRead == 0) {
-    showTextBottom(F("No response"));
-    Serial.println(F("[FPGA] No response"));
+    showTextBottom(F("?"));
     return;
   }
 
@@ -1043,41 +932,30 @@ void processButtonResponse(Button &btn) {
 
   switch (btn.respType) {
     case RESP_TEMP: {
-      // 2 bytes: 16-bit signed temperature in 0.1°C units
       if (bytesRead >= 2) {
         int16_t temp = (respBytes[0] << 8) | respBytes[1];
         float tempC = temp / 10.0;
-        result = "Temp: ";
-        result += String(tempC, 1);
-        result += "C";
+        result = String(tempC, 1) + "C";
       }
       break;
     }
 
     case RESP_STATUS: {
-      // 1 byte: status code
-      result = "Status: 0x";
+      result = "0x";
       if (respBytes[0] < 16) result += "0";
       result += String(respBytes[0], HEX);
-      result += " (";
-      result += String(respBytes[0]);
-      result += ")";
       break;
     }
 
     case RESP_COUNTER: {
-      // 2 bytes: 16-bit unsigned counter
       if (bytesRead >= 2) {
         uint16_t count = (respBytes[0] << 8) | respBytes[1];
-        result = "Count: ";
-        result += String(count);
+        result = String(count);
       }
       break;
     }
 
     case RESP_RAW: {
-      // Raw bytes display
-      result = "Data: ";
       for (uint8_t i = 0; i < bytesRead; i++) {
         if (i > 0) result += " ";
         if (respBytes[i] < 16) result += "0";
@@ -1087,7 +965,7 @@ void processButtonResponse(Button &btn) {
     }
 
     default:
-      result = "Unknown";
+      result = "?";
       break;
   }
 
@@ -1095,6 +973,6 @@ void processButtonResponse(Button &btn) {
   showTextBottom(result);
 
   // Log to USB serial
-  Serial.print(F("[FPGA] "));
+  Serial.print(F("[F] "));
   Serial.println(result);
 }
