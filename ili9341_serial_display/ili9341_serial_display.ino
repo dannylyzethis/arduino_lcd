@@ -311,9 +311,6 @@ void processCmd(String c) {
     } else if (c == "#REGINFO") {
       regInfo();
 
-    } else if (c == "#SHOWREGS") {
-      showRegs();
-
     } else if (c == "#HELP") {
       help();
     }
@@ -418,7 +415,6 @@ void help() {
   Serial.println(F("#FPGABYTES hex - Send bytes to FPGA"));
   Serial.println(F(">>>text - FPGA passthrough"));
   Serial.println(F("#REGINFO - FPGA register info"));
-  Serial.println(F("#SHOWREGS - Display regs on LCD"));
   Serial.println(F(""));
   Serial.println(F("=FPGA Frame Modes (R06)="));
   Serial.println(F("0=Raw 1=LenPrefix 2=Term 3=Both"));
@@ -451,52 +447,6 @@ void regInfo() {
   Serial.println(F("  Thresholds, setpoints, config values"));
   Serial.println(F("  State machine parameters"));
   Serial.println(F("  Calibration data, timing params"));
-}
-
-void showRegs() {
-  tft.fillScreen(0);
-  tft.setTextSize(1);
-  tft.setTextColor(0xFFFF);
-  tft.setCursor(0, 0);
-
-  tft.println(F("=Display Settings="));
-  tft.print(F("Top: 0x"));
-  tft.print(registers[REG_TOP_COLOR], HEX);
-  tft.print(F(" Sz:"));
-  tft.println(registers[REG_TOP_SIZE]);
-
-  tft.print(F("Bot: 0x"));
-  tft.print(registers[REG_BOT_COLOR], HEX);
-  tft.print(F(" Sz:"));
-  tft.println(registers[REG_BOT_SIZE]);
-
-  tft.println();
-  tft.println(F("=FPGA Settings="));
-  tft.print(F("Baud: "));
-  tft.println(registers[REG_FPGA_BAUD]);
-
-  tft.print(F("Frame: 0x"));
-  tft.print(registers[REG_FPGA_FRAME], HEX);
-  tft.print(F(" Rot:"));
-  tft.println(registers[REG_ROTATION]);
-
-  tft.println();
-  tft.println(F("=User Registers="));
-  for (int i = REG_FPGA_USER0; i <= REG_FPGA_USER7; i++) {
-    tft.print(F("R"));
-    if (i < 16) tft.print(F("0"));
-    tft.print(i, HEX);
-    tft.print(F("=0x"));
-    tft.println(registers[i], HEX);
-  }
-
-  tft.println();
-  tft.setTextColor(0x07E0);
-  tft.println(F("Send any command to continue"));
-
-  topPosY = 0;
-  bottomPosY = bottomMinY;
-  drawDivider();
 }
 
 void initButtons() {
