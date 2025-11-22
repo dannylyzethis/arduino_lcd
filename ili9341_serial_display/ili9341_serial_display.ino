@@ -398,7 +398,30 @@ void writeRegister(uint8_t addr, uint32_t value) {
 }
 
 void help() {
-  Serial.println(F("#W #R #CLR #SHOWBTNS"));
+  Serial.println(F("=Register System="));
+  Serial.println(F("R00=TopColor R01=TopBG R02=TopSize"));
+  Serial.println(F("R03=BotColor R04=BotSize"));
+  Serial.println(F("R05=FPGABaud R06=FPGAFrame R07=Rotation"));
+  Serial.println(F("R08-0F=FPGA User Registers"));
+  Serial.println(F(""));
+  Serial.println(F("=Commands="));
+  Serial.println(F("#W addr val - Write register (hex)"));
+  Serial.println(F("#R addr - Read register"));
+  Serial.println(F("#CLR - Clear screen"));
+  Serial.println(F("#SHOWBTNS / #HIDEBTNS - Touch buttons"));
+  Serial.println(F("#FPGABYTES hex - Send bytes to FPGA"));
+  Serial.println(F(">>>text - FPGA passthrough"));
+  Serial.println(F(""));
+  Serial.println(F("=FPGA Frame Modes (R06)="));
+  Serial.println(F("0=Raw 1=LenPrefix 2=Term 3=Both"));
+  Serial.println(F("Example: #W 06 02FF (mode 2, term=0xFF)"));
+  Serial.println(F(""));
+  Serial.println(F("=Examples="));
+  Serial.println(F("#W 00 F800 - Set red text"));
+  Serial.println(F("#W 02 3 - Set size 3"));
+  Serial.println(F("#W 07 1 - Rotate landscape"));
+  Serial.println(F("#W 05 115200 - Set FPGA baud"));
+  Serial.println(F("#FPGABYTES 54 45 4D 50 - Send TEMP"));
 }
 
 void initButtons() {
