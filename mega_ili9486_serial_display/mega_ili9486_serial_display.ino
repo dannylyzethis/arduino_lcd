@@ -1,10 +1,15 @@
 /*
  * ILI9486 Serial Display Controller - ARDUINO MEGA 2560 VERSION
- * Enhanced Edition v2.2 with Advanced Features
+ * Enhanced Edition v2.3 with Animation Frame Support
  * Target: Arduino Mega 2560 + ILI9486 320x480 Display
  * Memory: 8KB RAM, 256KB Flash (vs Uno: 2KB RAM, 32KB Flash)
  *
- * New Features v2.2:
+ * New Features v2.3:
+ * - Animation frame system with playback control
+ * - Frame buffer for sprite animations
+ * - Frame sequence playback with configurable speed
+ *
+ * Previous Features v2.2:
  * - Text alignment (LEFT, CENTER, RIGHT) with proper wrapping
  * - Scrolling marquee text
  * - Line graphs with auto-scaling
@@ -56,10 +61,26 @@ bool invertDisplay = false;
 int16_t graphData[MAX_GRAPH_POINTS];
 uint8_t graphPointCount = 0;
 
+// Animation frame storage
+#define MAX_FRAMES 10
+#define MAX_FRAME_SIZE 512  // Max bytes per frame (64x64 pixels @ 1 bit/pixel)
+
+struct AnimFrame {
+  uint8_t width;
+  uint8_t height;
+  uint16_t dataSize;  // Size in bytes
+  uint8_t* data;      // Pointer to bitmap data
+  bool defined;       // Is this frame defined?
+};
+
+AnimFrame frames[MAX_FRAMES];
+bool animationRunning = false;
+uint16_t totalFrameMemory = 0;
+
 void setup() {
   Serial.begin(115200); // Mega can handle higher baud rates
   Serial.println(F("Arduino Mega 2560 + ILI9486"));
-  Serial.println(F("Serial Display Controller v2.2"));
+  Serial.println(F("Serial Display Controller v2.3"));
   Serial.println(F("Enhanced Edition - Initializing..."));
 
   uint16_t ID = tft.readID();
@@ -95,7 +116,7 @@ void setup() {
   tft.setTextColor(0x07FF); // Cyan
   tft.println(F("MEGA 2560 + ILI9486"));
   tft.setTextColor(0x07E0); // Green
-  tft.println(F("Serial Display v2.0"));
+  tft.println(F("Serial Display v2.3"));
   tft.setTextColor(0xFFE0); // Yellow
   tft.println(F("Ready for commands..."));
   tft.println();
@@ -106,6 +127,15 @@ void setup() {
   posY = tft.getCursorY();
 
   cmd.reserve(500); // Mega has plenty of RAM (max command length ~490 chars)
+
+  // Initialize animation frames
+  for (int i = 0; i < MAX_FRAMES; i++) {
+    frames[i].defined = false;
+    frames[i].data = NULL;
+    frames[i].width = 0;
+    frames[i].height = 0;
+    frames[i].dataSize = 0;
+  }
 
   Serial.println(F("Ready. Type #HELP for commands"));
 }
@@ -396,6 +426,22 @@ void processCmd(String c) {
 
     } else if (c.startsWith("#ARC ")) {
       parseArc(c.substring(5));
+
+    } else if (c.startsWith("#FRAMEDEF ")) {
+      parseFrameDef(c.substring(10));
+
+    } else if (c.startsWith("#FRAMECLEAR")) {
+      parseFrameClear(c.substring(11));
+
+    } else if (c.startsWith("#ANIMATE ")) {
+      parseAnimate(c.substring(9));
+
+    } else if (c == "#FRAMESTOP") {
+      animationRunning = false;
+      Serial.println(F("Animation stopped"));
+
+    } else if (c == "#FRAMEINFO") {
+      showFrameInfo();
 
     } else if (c.startsWith("#INVERT ")) {
       String val = c.substring(8);
@@ -1298,10 +1344,294 @@ void parseArc(String p) {
   }
 }
 
+// ===== ANIMATION FRAME SYSTEM =====
+
+// Clear a specific frame or all frames
+void clearFrame(uint8_t id) {
+  if (id >= MAX_FRAMES) return;
+
+  if (frames[id].defined && frames[id].data != NULL) {
+    free(frames[id].data);
+    totalFrameMemory -= frames[id].dataSize;
+    frames[id].data = NULL;
+  }
+
+  frames[id].defined = false;
+  frames[id].width = 0;
+  frames[id].height = 0;
+  frames[id].dataSize = 0;
+}
+
+// Draw a frame at specified position
+void drawFrame(uint8_t id, int x, int y) {
+  if (id >= MAX_FRAMES || !frames[id].defined) return;
+
+  uint8_t w = frames[id].width;
+  uint8_t h = frames[id].height;
+  uint8_t* data = frames[id].data;
+
+  // Draw bitmap
+  int bitIndex = 0;
+  for (int py = 0; py < h; py++) {
+    for (int px = 0; px < w; px++) {
+      int bytePos = bitIndex / 8;
+      int bitPos = 7 - (bitIndex % 8);
+
+      if (bytePos < frames[id].dataSize) {
+        uint8_t byte = data[bytePos];
+
+        // Check bit
+        if (byte & (1 << bitPos)) {
+          tft.drawPixel(x + px, y + py, textColor);
+        } else if (opaqueText) {
+          tft.drawPixel(x + px, y + py, bgColor);
+        }
+      }
+
+      bitIndex++;
+    }
+  }
+}
+
+// Define animation frame
+// Format: #FRAMEDEF <id> <w> <h> <hexdata>
+void parseFrameDef(String p) {
+  int v[3], i = 0, last = -1;
+
+  // Parse id, w, h
+  for (int j = 0; j <= p.length() && i < 3; j++) {
+    if (j == p.length() || p[j] == ' ') {
+      v[i++] = p.substring(last + 1, j).toInt();
+      last = j;
+    }
+  }
+
+  if (i != 3) {
+    Serial.println(F("?FrameDef syntax"));
+    return;
+  }
+
+  uint8_t id = v[0];
+  uint8_t w = v[1];
+  uint8_t h = v[2];
+
+  if (id >= MAX_FRAMES) {
+    Serial.print(F("?Frame ID 0-"));
+    Serial.println(MAX_FRAMES - 1);
+    return;
+  }
+
+  if (w == 0 || h == 0 || w > 128 || h > 128) {
+    Serial.println(F("?Frame size 1-128"));
+    return;
+  }
+
+  String hexData = p.substring(last + 1);
+  hexData.trim();
+  hexData.toUpperCase();
+
+  uint16_t bytesNeeded = ((w * h) + 7) / 8;
+
+  if (bytesNeeded > MAX_FRAME_SIZE) {
+    Serial.println(F("?Frame too large"));
+    return;
+  }
+
+  // Clear old frame if exists
+  clearFrame(id);
+
+  // Allocate memory
+  uint8_t* frameData = (uint8_t*)malloc(bytesNeeded);
+  if (frameData == NULL) {
+    Serial.println(F("?Out of memory"));
+    return;
+  }
+
+  // Parse hex data into frame buffer
+  for (uint16_t i = 0; i < bytesNeeded && i * 2 + 1 < hexData.length(); i++) {
+    char hexByte[3] = {hexData[i * 2], hexData[i * 2 + 1], 0};
+    frameData[i] = strtol(hexByte, NULL, 16);
+  }
+
+  // Store frame
+  frames[id].width = w;
+  frames[id].height = h;
+  frames[id].dataSize = bytesNeeded;
+  frames[id].data = frameData;
+  frames[id].defined = true;
+  totalFrameMemory += bytesNeeded;
+
+  Serial.print(F("Frame "));
+  Serial.print(id);
+  Serial.print(F(": "));
+  Serial.print(w);
+  Serial.print(F("x"));
+  Serial.print(h);
+  Serial.print(F(" ("));
+  Serial.print(bytesNeeded);
+  Serial.println(F("B)"));
+}
+
+// Clear frames
+// Format: #FRAMECLEAR [id]  (no id = clear all)
+void parseFrameClear(String p) {
+  p.trim();
+
+  if (p.length() == 0) {
+    // Clear all frames
+    for (int i = 0; i < MAX_FRAMES; i++) {
+      clearFrame(i);
+    }
+    totalFrameMemory = 0;
+    Serial.println(F("All frames cleared"));
+  } else {
+    // Clear specific frame
+    int id = p.toInt();
+    if (id >= 0 && id < MAX_FRAMES) {
+      clearFrame(id);
+      Serial.print(F("Frame "));
+      Serial.print(id);
+      Serial.println(F(" cleared"));
+    } else {
+      Serial.print(F("?Frame ID 0-"));
+      Serial.println(MAX_FRAMES - 1);
+    }
+  }
+}
+
+// Play animation
+// Format: #ANIMATE <x> <y> <frame1,frame2,...> <delay> [loop]
+void parseAnimate(String p) {
+  int v[2], i = 0, last = -1;
+
+  // Parse x, y
+  for (int j = 0; j <= p.length() && i < 2; j++) {
+    if (j == p.length() || p[j] == ' ') {
+      v[i++] = p.substring(last + 1, j).toInt();
+      last = j;
+    }
+  }
+
+  if (i != 2) {
+    Serial.println(F("?Animate syntax"));
+    return;
+  }
+
+  int x = v[0];
+  int y = v[1];
+
+  // Get frame sequence
+  int sp = p.indexOf(' ', last + 1);
+  if (sp < 0) {
+    Serial.println(F("?Missing frame sequence"));
+    return;
+  }
+
+  String frameSeq = p.substring(last + 1, sp);
+
+  // Get delay
+  int sp2 = p.indexOf(' ', sp + 1);
+  int frameDelay;
+  bool loop = false;
+
+  if (sp2 < 0) {
+    frameDelay = p.substring(sp + 1).toInt();
+  } else {
+    frameDelay = p.substring(sp + 1, sp2).toInt();
+    String loopStr = p.substring(sp2 + 1);
+    loopStr.trim();
+    loopStr.toUpperCase();
+    loop = (loopStr == "LOOP" || loopStr == "1");
+  }
+
+  if (frameDelay < 10) frameDelay = 10;
+  if (frameDelay > 5000) frameDelay = 5000;
+
+  // Parse frame sequence
+  uint8_t frameList[MAX_FRAMES];
+  uint8_t frameCount = 0;
+  int lastComma = -1;
+
+  for (int j = 0; j <= frameSeq.length() && frameCount < MAX_FRAMES; j++) {
+    if (j == frameSeq.length() || frameSeq[j] == ',') {
+      if (j > lastComma + 1) {
+        uint8_t fid = frameSeq.substring(lastComma + 1, j).toInt();
+        if (fid < MAX_FRAMES && frames[fid].defined) {
+          frameList[frameCount++] = fid;
+        }
+      }
+      lastComma = j;
+    }
+  }
+
+  if (frameCount == 0) {
+    Serial.println(F("?No valid frames"));
+    return;
+  }
+
+  Serial.print(F("Animating "));
+  Serial.print(frameCount);
+  Serial.println(F(" frames..."));
+
+  animationRunning = true;
+
+  // Play animation
+  do {
+    for (uint8_t i = 0; i < frameCount && animationRunning; i++) {
+      drawFrame(frameList[i], x, y);
+      delay(frameDelay);
+
+      // Check for serial interrupt
+      if (Serial.available()) {
+        animationRunning = false;
+        while(Serial.available()) Serial.read(); // Clear buffer
+        Serial.println(F("Animation stopped"));
+        return;
+      }
+    }
+  } while (loop && animationRunning);
+
+  animationRunning = false;
+  Serial.println(F("Animation complete"));
+}
+
+// Show frame info
+void showFrameInfo() {
+  Serial.println(F("=== FRAME INFO ==="));
+  Serial.print(F("Total frames: "));
+  Serial.print(MAX_FRAMES);
+  Serial.println();
+
+  int definedCount = 0;
+  for (int i = 0; i < MAX_FRAMES; i++) {
+    if (frames[i].defined) {
+      definedCount++;
+      Serial.print(F("Frame "));
+      Serial.print(i);
+      Serial.print(F(": "));
+      Serial.print(frames[i].width);
+      Serial.print(F("x"));
+      Serial.print(frames[i].height);
+      Serial.print(F(" ("));
+      Serial.print(frames[i].dataSize);
+      Serial.println(F("B)"));
+    }
+  }
+
+  Serial.print(F("Defined: "));
+  Serial.println(definedCount);
+  Serial.print(F("Frame memory: "));
+  Serial.print(totalFrameMemory);
+  Serial.println(F(" bytes"));
+  Serial.print(F("Free RAM: "));
+  Serial.print(getFreeRam());
+  Serial.println(F(" bytes"));
+}
+
 // Help - comprehensive
 void help() {
   Serial.println(F("=== ARDUINO MEGA + ILI9486 COMMANDS ==="));
-  Serial.println(F("Enhanced Edition v2.2"));
+  Serial.println(F("Enhanced Edition v2.3"));
   Serial.println();
   Serial.println(F("TEXT COMMANDS:"));
   Serial.println(F("  <text>          - Display text"));
@@ -1343,6 +1673,13 @@ void help() {
   Serial.println(F("  #TEXTBOX <x y w h text> - Bordered text"));
   Serial.println(F("  #GAUGE <x y r val min max> - Analog gauge"));
   Serial.println(F("  #LEVEL <x y w h val max H|V> - Level meter"));
+  Serial.println();
+  Serial.println(F("ANIMATION FRAMES:"));
+  Serial.println(F("  #FRAMEDEF <id w h hex> - Define frame 0-9"));
+  Serial.println(F("  #FRAMECLEAR [id] - Clear frame(s)"));
+  Serial.println(F("  #ANIMATE <x y frames delay [loop]> - Play"));
+  Serial.println(F("  #FRAMESTOP      - Stop animation"));
+  Serial.println(F("  #FRAMEINFO      - Show frame memory"));
   Serial.println();
   Serial.println(F("SCREEN COMMANDS:"));
   Serial.println(F("  #CLEAR / #CLR   - Clear screen"));

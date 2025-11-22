@@ -1,6 +1,6 @@
 # Arduino Mega 2560 + ILI9486 Serial Display Controller
 
-**Enhanced Edition v2.1** - Professional serial display controller for Arduino Mega 2560 with ILI9486 320x480 LCD display.
+**Enhanced Edition v2.3** - Professional serial display controller for Arduino Mega 2560 with ILI9486 320x480 LCD display.
 
 ## Hardware Requirements
 
@@ -31,13 +31,15 @@ This version takes advantage of the Mega's superior specifications:
 - **Screen Control**: Clear, rotation (0-3), invert, reset
 - **Auto-Scroll**: Automatic screen clearing when full
 
-**Advanced Features (v2.1):**
+**Advanced Features (v2.1-v2.3):**
 - **Scrolling Marquee**: Smooth horizontal text scrolling with variable speed
 - **Line Graphs**: Plot up to 100 data points with auto-scaling
 - **Bar Charts**: Display up to 20 bars with auto-scaling
 - **Bitmap Display**: Monochrome bitmap rendering from hex data
 - **Text Boxes**: Bordered text boxes with auto-centering
 - **Grid Drawing**: Configurable grid patterns for graph backgrounds
+- **Animation Frames** (NEW v2.3): Store and play sprite animations with frame sequences
+- **Frame Playback**: Configurable speed and looping support
 
 ## Wiring
 
@@ -177,6 +179,53 @@ LCD_D7       ->  29
   - `w, h`: Width and height
   - `text`: Text to display (centered)
 - **Example**: `#TEXTBOX 50 200 200 50 STATUS: OK`
+
+### Animation Frame Commands (NEW in v2.3)
+
+#### Define Animation Frame
+- **Command**: `#FRAMEDEF <id> <w> <h> <hexdata>`
+- **Description**: Define a monochrome bitmap frame for animation
+- **Parameters**:
+  - `id`: Frame ID (0-9)
+  - `w, h`: Width and height in pixels (max 128x128)
+  - `hexdata`: Hex string bitmap data (1 bit per pixel, MSB first)
+- **Memory**: Max 10 frames, up to 512 bytes each
+- **Example**: `#FRAMEDEF 0 16 16 FFFFC003C003C003C003C003C003C003C003C003C003C003C003C003C003FFFF`
+- **Notes**: Frames are stored in RAM using dynamic allocation
+
+#### Play Animation
+- **Command**: `#ANIMATE <x> <y> <frames> <delay> [loop]`
+- **Description**: Play sequence of frames as animation
+- **Parameters**:
+  - `x, y`: Display position
+  - `frames`: Comma-separated frame IDs (e.g., `0,1,2,3`)
+  - `delay`: Delay between frames in milliseconds (10-5000)
+  - `loop`: Optional - use `LOOP` or `1` for continuous playback
+- **Example**: `#ANIMATE 100 200 0,1,2,3,2,1 100 LOOP`
+- **Notes**:
+  - Send any character to serial to stop animation
+  - Uses current text color for foreground
+  - Respects background color if opaque text enabled
+
+#### Clear Frames
+- **Command**: `#FRAMECLEAR [id]`
+- **Description**: Clear one or all animation frames
+- **Parameters**:
+  - `id`: (Optional) Frame ID to clear. If omitted, clears all frames
+- **Examples**:
+  - `#FRAMECLEAR` - Clear all frames
+  - `#FRAMECLEAR 3` - Clear only frame 3
+
+#### Stop Animation
+- **Command**: `#FRAMESTOP`
+- **Description**: Stop currently playing animation
+- **Example**: `#FRAMESTOP`
+
+#### Frame Information
+- **Command**: `#FRAMEINFO`
+- **Description**: Display frame memory usage and defined frames
+- **Example**: `#FRAMEINFO`
+- **Output**: Shows all defined frames with dimensions and memory usage
 
 ### Screen Commands
 
@@ -321,6 +370,70 @@ Smiley Face:
 #BITMAP 80 10 16 16 03C00FF01FF83FFC7C3EF81FF81FF81FF81F7C3E3FFC1FF80FF003C0
 ```
 
+### Sprite Animation Example (NEW in v2.3)
+```
+#CLEAR
+#SIZE 2
+#COLOR CYAN
+Animated Sprite Demo
+
+# Define 4 frames of a simple bouncing ball animation (8x8 pixels)
+#FRAMEDEF 0 8 8 3C7EFFFF7E3C0000
+#FRAMEDEF 1 8 8 003C7EFF7E3C0000
+#FRAMEDEF 2 8 8 00003C7EFF7E3C00
+#FRAMEDEF 3 8 8 0000003C7EFF7E3C
+
+# Play animation at position (150, 200) with 150ms delay per frame, looping
+#ANIMATE 150 200 0,1,2,3,2,1 150 LOOP
+
+# (Send any character to stop)
+# Stop the animation
+#FRAMESTOP
+
+# Check frame memory usage
+#FRAMEINFO
+```
+
+### Walking Character Animation (NEW in v2.3)
+```
+#CLEAR
+#SIZE 2
+Walking Animation:
+
+# Define walk cycle frames (16x16 stick figure)
+#FRAMEDEF 0 16 16 0000018003C007E00FF00FF00FF007E003C001800180018003C007E00E700C300
+#FRAMEDEF 1 16 16 0000018003C007E00FF00FF00FF007E003C0018001800C700E7007E003C00180
+#FRAMEDEF 2 16 16 0000018003C007E00FF00FF00FF007E003C001800180018003C007E00E700C300
+#FRAMEDEF 3 16 16 0000018003C007E00FF00FF00FF007E003C001800E700C70018001800180018
+
+# Animate the walk cycle
+#COLOR GREEN
+#ANIMATE 50 100 0,1,2,3 200 LOOP
+```
+
+### Loading Spinner Animation (NEW in v2.3)
+```
+#CLEAR
+#POS 0 200
+#SIZE 2
+#ALIGN CENTER
+Loading...
+
+# Define 8-frame spinner (12x12 pixels)
+#FRAMEDEF 0 12 12 0E01F03F07F0FF0FF01E00000000000000
+#FRAMEDEF 1 12 12 00001E00F01FF0FF07F03F01F00E000000
+#FRAMEDEF 2 12 12 0000000000001E00F01FF0FF07F03F01F0
+#FRAMEDEF 3 12 12 1F03F07F0FF01E00000000000000E01F0
+#FRAMEDEF 4 12 12 F01F03F01E00000000000000E01F07F0FF0
+#FRAMEDEF 5 12 12 0FF07F03F01E0000000000000000000E01F0
+#FRAMEDEF 6 12 12 1F00E00000000000000E01F03F07F0FF0
+#FRAMEDEF 7 12 12 0FF0FF07F03F01F00E000000000000000000
+
+# Show spinner at center of screen
+#COLOR CYAN
+#ANIMATE 154 150 0,1,2,3,4,5,6,7 100 LOOP
+```
+
 ## Technical Specifications
 
 ### Display
@@ -385,13 +498,33 @@ Smiley Face:
 - [ ] JSON command protocol for structured data
 - [ ] Custom font loading
 - [ ] Screen capture to SD card
-- [ ] Animation frame sequences
+- [x] Animation frame sequences *(Implemented in v2.3)*
 - [ ] Real-time clock display
 - [ ] Weather icon library
+- [ ] Pre-loaded sprite libraries
+- [ ] Frame compression for larger sprites
 
 ## Version History
 
-- **v2.1** - Enhanced Edition with Advanced Features (Current)
+- **v2.3** - Animation Frame System (Current)
+  - ✅ Animation frame storage (up to 10 frames)
+  - ✅ Frame definition with dynamic memory allocation
+  - ✅ Animation playback with configurable speed
+  - ✅ Loop support for continuous animation
+  - ✅ Frame memory management and monitoring
+  - ✅ Stop/clear frame commands
+  - Sprite animation support
+  - Enhanced documentation with animation examples
+
+- **v2.2** - Bug Fixes and New Visualization Features
+  - ✅ Fixed text alignment underflow bugs
+  - ✅ Fixed wrapped text alignment
+  - ✅ Analog gauge/meter displays
+  - ✅ Level meters (horizontal/vertical)
+  - ✅ Arc drawing for pie charts
+  - Enhanced reliability
+
+- **v2.1** - Enhanced Edition with Advanced Features
   - ✅ Text alignment (LEFT, CENTER, RIGHT)
   - ✅ Scrolling marquee text
   - ✅ Line graph plotting (up to 100 points)
