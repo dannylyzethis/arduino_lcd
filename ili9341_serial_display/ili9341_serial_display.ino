@@ -44,7 +44,7 @@ bool cmdReady = false;
 
 String fpgaBuffer = "";
 
-#define NUM_REGISTERS 32
+#define NUM_REGISTERS 16
 uint32_t registers[NUM_REGISTERS];
 
 #define REG_TOP_COLOR    0x00
@@ -287,29 +287,6 @@ void processCmd(String c) {
       topPosX = topPosY = 0;
       drawDivider();
 
-    } else if (c.startsWith("#POS ")) {
-      int sp = c.indexOf(' ', 5);
-      if (sp > 0) {
-        topPosX = c.substring(5, sp).toInt();
-        topPosY = c.substring(sp + 1).toInt();
-        tft.setCursor(topPosX, topPosY);
-      }
-
-    } else if (c.startsWith("#RECT ")) {
-      parseRect(c.substring(6));
-      
-    } else if (c.startsWith("#CIRCLE ")) {
-      parseCirc(c.substring(8));
-      
-    } else if (c.startsWith("#LINE ")) {
-      parseLine(c.substring(6));
-      
-    } else if (c.startsWith("#FILL ")) {
-      parseFill(c.substring(6));
-
-    } else if (c.startsWith("#PROG ")) {
-      parseProg(c.substring(6));
-
     } else if (c == "#CLRBOT") {
       tft.fillRect(0, bottomMinY, screenW, bottomMaxY - bottomMinY, 0x0000);
       bottomPosX = 0;
@@ -322,13 +299,6 @@ void processCmd(String c) {
       bottomPosX = 0;
       bottomPosY = bottomMinY;
       drawDivider();
-
-    } else if (c.startsWith("#FPGASEND ")) {
-      String data = c.substring(10);
-      fpgaSerial.println(data);
-
-    } else if (c == "#FPGAPING") {
-      fpgaSerial.println(F("PING"));
 
     } else if (c.startsWith("#FPGABYTES ")) {
       String hexData = c.substring(11);
@@ -456,83 +426,10 @@ uint32_t readRegister(uint8_t addr) {
   return registers[addr];
 }
 
-void parseRect(String p) {
-  int v[4], i = 0, last = -1;
-  for (int j = 0; j <= p.length() && i < 4; j++) {
-    if (j == p.length() || p[j] == ' ') {
-      v[i++] = p.substring(last + 1, j).toInt();
-      last = j;
-    }
-  }
-  if (i == 4) tft.drawRect(v[0], v[1], v[2], v[3], registers[REG_TOP_COLOR]);
-}
-
-void parseFill(String p) {
-  int v[4], i = 0, last = -1;
-  for (int j = 0; j <= p.length() && i < 4; j++) {
-    if (j == p.length() || p[j] == ' ') {
-      v[i++] = p.substring(last + 1, j).toInt();
-      last = j;
-    }
-  }
-  if (i == 4) tft.fillRect(v[0], v[1], v[2], v[3], registers[REG_TOP_COLOR]);
-}
-
-void parseCirc(String p) {
-  int v[3], i = 0, last = -1;
-  for (int j = 0; j <= p.length() && i < 3; j++) {
-    if (j == p.length() || p[j] == ' ') {
-      v[i++] = p.substring(last + 1, j).toInt();
-      last = j;
-    }
-  }
-  if (i == 3) tft.drawCircle(v[0], v[1], v[2], registers[REG_TOP_COLOR]);
-}
-
-void parseLine(String p) {
-  int v[4], i = 0, last = -1;
-  for (int j = 0; j <= p.length() && i < 4; j++) {
-    if (j == p.length() || p[j] == ' ') {
-      v[i++] = p.substring(last + 1, j).toInt();
-      last = j;
-    }
-  }
-  if (i == 4) tft.drawLine(v[0], v[1], v[2], v[3], registers[REG_TOP_COLOR]);
-}
-
-void parseProg(String p) {
-  int v[5], i = 0, last = -1;
-  for (int j = 0; j <= p.length() && i < 5; j++) {
-    if (j == p.length() || p[j] == ' ') {
-      v[i++] = p.substring(last + 1, j).toInt();
-      last = j;
-    }
-  }
-  if (i == 5) {
-    int pct = constrain(v[4], 0, 100);
-    int fw = (v[2] * pct) / 100;
-    tft.drawRect(v[0], v[1], v[2], v[3], registers[REG_TOP_COLOR]);
-    if (fw > 2) {
-      tft.fillRect(v[0]+1, v[1]+1, fw-2, v[3]-2, registers[REG_TOP_COLOR]);
-    }
-  }
-}
-
 void help() {
-  Serial.println(F("=Registers="));
-  Serial.println(F("R00=TopColor R01=TopBgColor R02=TopSize"));
-  Serial.println(F("R03=BotColor R04=BotSize R05=FPGABaud"));
-  Serial.println(F("R06=FPGAFrame R07=Rotation"));
-  Serial.println(F("R08-R0F=FPGA User Registers"));
-  Serial.println(F("=Commands="));
-  Serial.println(F("#W addr val - Write register"));
-  Serial.println(F("#R addr - Read register"));
-  Serial.println(F("#CLR #CLRBOT #CLRALL"));
-  Serial.println(F("#SHOWBTNS #HIDEBTNS"));
-  Serial.println(F("#FPGABYTES hex - Send to FPGA"));
-  Serial.println(F(">>>text - FPGA passthrough"));
-  Serial.println(F("=Frame Modes="));
-  Serial.println(F("0=Raw 1=LenPrefix 2=Term 3=Both"));
+  Serial.println(F("R00-07:Disp R08-0F:FPGA"));
+  Serial.println(F("#W/#R #CLR #SHOWBTNS"));
+  Serial.println(F("#FPGABYTES >>>text"));
 }
 
 void initButtons() {
