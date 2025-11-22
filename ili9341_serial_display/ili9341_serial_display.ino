@@ -426,7 +426,7 @@ void help() {
   Serial.println(F("#W 00 F800 - Set red text"));
   Serial.println(F("#W 02 3 - Set size 3"));
   Serial.println(F("#W 07 1 - Rotate landscape"));
-  Serial.println(F("#W 05 115200 - Set FPGA baud"));
+  Serial.println(F("#W 05 1C200 - Set FPGA 115200 baud"));
   Serial.println(F("#FPGABYTES 54 45 4D 50 - Send TEMP"));
 }
 
