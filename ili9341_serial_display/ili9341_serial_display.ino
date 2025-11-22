@@ -130,7 +130,7 @@ void setup() {
   fpgaBuffer.reserve(80);
   initButtons();
 
-  Serial.println(F("READY"));
+  Serial.println(F("S.A.M. REG-v1.0"));
 }
 
 void loop() {
