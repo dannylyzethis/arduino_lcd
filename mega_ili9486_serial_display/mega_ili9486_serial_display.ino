@@ -1,11 +1,11 @@
 /*
  * ILI9486 Serial Display Controller - ARDUINO MEGA 2560 VERSION
- * Enhanced Edition v2.1 with Advanced Features
+ * Enhanced Edition v2.2 with Advanced Features
  * Target: Arduino Mega 2560 + ILI9486 320x480 Display
  * Memory: 8KB RAM, 256KB Flash (vs Uno: 2KB RAM, 32KB Flash)
  *
- * New Features v2.1:
- * - Text alignment (LEFT, CENTER, RIGHT)
+ * New Features v2.2:
+ * - Text alignment (LEFT, CENTER, RIGHT) with proper wrapping
  * - Scrolling marquee text
  * - Line graphs with auto-scaling
  * - Bar charts/graphs
@@ -13,6 +13,9 @@
  * - Text boxes with borders
  * - Grid drawing
  * - Display inversion
+ * - Analog gauge/meter displays
+ * - Level meters (horizontal/vertical)
+ * - Arc drawing for pie charts
  */
 
 #include <Adafruit_GFX.h>
@@ -56,7 +59,7 @@ uint8_t graphPointCount = 0;
 void setup() {
   Serial.begin(115200); // Mega can handle higher baud rates
   Serial.println(F("Arduino Mega 2560 + ILI9486"));
-  Serial.println(F("Serial Display Controller v2.1"));
+  Serial.println(F("Serial Display Controller v2.2"));
   Serial.println(F("Enhanced Edition - Initializing..."));
 
   uint16_t ID = tft.readID();
@@ -147,36 +150,55 @@ void showText(const String& txt) {
     posY = 0;
   }
 
-  // Calculate X position based on alignment
-  uint16_t startX = posX;
-  if (textAlign == 1) { // CENTER
-    uint16_t textWidth = txt.length() * BASE_CHAR_W * textSize;
-    startX = (screenW - textWidth) / 2;
-    if (startX > screenW) startX = 0; // Safety check for overflow
-  } else if (textAlign == 2) { // RIGHT
-    uint16_t textWidth = txt.length() * BASE_CHAR_W * textSize;
-    startX = screenW - textWidth;
-    if (startX > screenW) startX = 0; // Safety check for overflow
-  }
-
-  tft.setCursor(startX, posY);
-
-  // For long text, print in chunks
+  // For long text, print in chunks with proper alignment per line
   uint16_t charsPerLine = screenW / (BASE_CHAR_W * textSize);
   if (charsPerLine == 0) charsPerLine = 1; // Safety check
+
   if (txt.length() > charsPerLine) {
     int start = 0;
     while (start < txt.length()) {
       int end = min(start + charsPerLine, (int)txt.length());
-      tft.print(txt.substring(start, end));
+      String line = txt.substring(start, end);
+
+      // Calculate alignment for THIS line
+      uint16_t lineX = posX;
+      uint16_t lineWidth = line.length() * BASE_CHAR_W * textSize;
+
+      if (textAlign == 1) { // CENTER
+        if (lineWidth < screenW) {
+          lineX = (screenW - lineWidth) / 2;
+        }
+      } else if (textAlign == 2) { // RIGHT
+        if (lineWidth < screenW) {
+          lineX = screenW - lineWidth;
+        }
+      }
+
+      tft.setCursor(lineX, posY);
+      tft.print(line);
+
       start = end;
       if (start < txt.length()) {
         posY += lineH;
-        tft.setCursor(textAlign == 0 ? 0 : startX, posY);
       }
     }
     tft.println();
   } else {
+    // Single line - calculate alignment
+    uint16_t startX = posX;
+    uint16_t textWidth = txt.length() * BASE_CHAR_W * textSize;
+
+    if (textAlign == 1) { // CENTER
+      if (textWidth < screenW) {
+        startX = (screenW - textWidth) / 2;
+      }
+    } else if (textAlign == 2) { // RIGHT
+      if (textWidth < screenW) {
+        startX = screenW - textWidth;
+      }
+    }
+
+    tft.setCursor(startX, posY);
     tft.println(txt);
   }
 
@@ -365,6 +387,15 @@ void processCmd(String c) {
 
     } else if (c.startsWith("#GRID ")) {
       parseGrid(c.substring(6));
+
+    } else if (c.startsWith("#GAUGE ")) {
+      parseGauge(c.substring(7));
+
+    } else if (c.startsWith("#LEVEL ")) {
+      parseLevel(c.substring(7));
+
+    } else if (c.startsWith("#ARC ")) {
+      parseArc(c.substring(5));
 
     } else if (c.startsWith("#INVERT ")) {
       String val = c.substring(8);
@@ -869,8 +900,8 @@ void parseMarquee(String p) {
 
   // Scroll text across screen
   while (x > -(int16_t)textWidth) {
-    // Clear text area
-    tft.fillRect(0, y, screenW, BASE_CHAR_H * textSize, bgColor);
+    // Clear text area (use black for consistent background)
+    tft.fillRect(0, y, screenW, BASE_CHAR_H * textSize, 0);
 
     // Draw text at current position
     tft.setCursor(x, y);
@@ -1130,10 +1161,147 @@ void parseGrid(String p) {
   }
 }
 
+// Analog gauge/meter display
+// Format: #GAUGE <x> <y> <radius> <value> <min> <max>
+void parseGauge(String p) {
+  int v[6], i = 0, last = -1;
+  for (int j = 0; j <= p.length() && i < 6; j++) {
+    if (j == p.length() || p[j] == ' ') {
+      v[i++] = p.substring(last + 1, j).toInt();
+      last = j;
+    }
+  }
+  if (i == 6) {
+    int cx = v[0], cy = v[1], radius = v[2];
+    int value = v[3], minVal = v[4], maxVal = v[5];
+
+    // Constrain value
+    value = constrain(value, minVal, maxVal);
+
+    // Draw gauge arc (bottom half circle, 180 degrees)
+    // Start at 180 degrees (left), end at 0 degrees (right)
+    int arcStart = 180;
+    int arcEnd = 360;
+
+    // Draw background arc segments
+    for (int angle = arcStart; angle <= arcEnd; angle += 5) {
+      float rad = angle * 0.0174533; // degrees to radians
+      int x1 = cx + (radius - 3) * cos(rad);
+      int y1 = cy + (radius - 3) * sin(rad);
+      int x2 = cx + radius * cos(rad);
+      int y2 = cy + radius * sin(rad);
+      tft.drawLine(x1, y1, x2, y2, 0x7BEF); // Dark grey
+    }
+
+    // Calculate needle angle based on value
+    float ratio = (float)(value - minVal) / (maxVal - minVal);
+    int needleAngle = arcStart + (int)(ratio * (arcEnd - arcStart));
+
+    // Draw needle
+    float needleRad = needleAngle * 0.0174533;
+    int needleX = cx + (radius - 5) * cos(needleRad);
+    int needleY = cy + (radius - 5) * sin(needleRad);
+
+    tft.drawLine(cx, cy, needleX, needleY, fillColor);
+    tft.fillCircle(cx, cy, 3, fillColor);
+
+    // Draw center point
+    tft.fillCircle(cx, cy, 2, textColor);
+
+    Serial.print(F("Gauge:"));
+    Serial.println(value);
+  }
+}
+
+// Level meter (battery/signal style)
+// Format: #LEVEL <x> <y> <w> <h> <value> <max> <H|V>
+void parseLevel(String p) {
+  int v[6], i = 0, last = -1;
+
+  // Parse x, y, w, h, value, max
+  for (int j = 0; j < p.length() && i < 6; j++) {
+    if (p[j] == ' ') {
+      if (j > last + 1) {
+        v[i++] = p.substring(last + 1, j).toInt();
+      }
+      last = j;
+    }
+  }
+
+  // Get orientation (last char after the numbers)
+  String orientation = p.substring(last + 1);
+  orientation.trim();
+  orientation.toUpperCase();
+
+  if (i == 6) {
+    int x = v[0], y = v[1], w = v[2], h = v[3];
+    int value = v[4], maxVal = v[5];
+
+    value = constrain(value, 0, maxVal);
+
+    // Draw border
+    tft.drawRect(x, y, w, h, textColor);
+
+    // Calculate fill based on orientation
+    if (orientation == "H") {
+      // Horizontal
+      int fillW = (w - 4) * value / maxVal;
+      if (fillW > 0) {
+        tft.fillRect(x + 2, y + 2, fillW, h - 4, fillColor);
+      }
+    } else {
+      // Vertical (default)
+      int fillH = (h - 4) * value / maxVal;
+      if (fillH > 0) {
+        int fillY = y + h - 2 - fillH;
+        tft.fillRect(x + 2, fillY, w - 4, fillH, fillColor);
+      }
+    }
+
+    Serial.print(F("Level:"));
+    Serial.print(value);
+    Serial.print(F("/"));
+    Serial.println(maxVal);
+  }
+}
+
+// Draw arc (for pie charts, gauges, etc.)
+// Format: #ARC <x> <y> <radius> <startAngle> <endAngle> <thickness>
+void parseArc(String p) {
+  int v[6], i = 0, last = -1;
+  for (int j = 0; j <= p.length() && i < 6; j++) {
+    if (j == p.length() || p[j] == ' ') {
+      v[i++] = p.substring(last + 1, j).toInt();
+      last = j;
+    }
+  }
+  if (i == 6) {
+    int cx = v[0], cy = v[1], radius = v[2];
+    int startAngle = v[3], endAngle = v[4], thickness = v[5];
+
+    // Constrain angles to 0-360
+    startAngle = startAngle % 360;
+    endAngle = endAngle % 360;
+
+    // Draw arc using line segments
+    for (int angle = startAngle; angle <= endAngle; angle += 2) {
+      for (int t = 0; t < thickness; t++) {
+        float rad = angle * 0.0174533; // degrees to radians
+        int r = radius - t;
+        int x = cx + r * cos(rad);
+        int y = cy + r * sin(rad);
+        tft.drawPixel(x, y, fillColor);
+      }
+    }
+
+    Serial.println(F("Arc"));
+  }
+}
+
 // Help - comprehensive
 void help() {
   Serial.println(F("=== ARDUINO MEGA + ILI9486 COMMANDS ==="));
-  Serial.println(F("Enhanced Edition v2.1"));
+  Serial.println(F("Enhanced Edition v2.2"));
   Serial.println();
   Serial.println(F("TEXT COMMANDS:"));
   Serial.println(F("  <text>          - Display text"));
@@ -1165,6 +1333,7 @@ void help() {
   Serial.println(F("  #PIXEL <x y>         - Draw pixel"));
   Serial.println(F("  #PROG <x y w h %>    - Progress bar"));
   Serial.println(F("  #GRID <x y w h spacing> - Draw grid"));
+  Serial.println(F("  #ARC <x y r start end thick> - Draw arc"));
   Serial.println();
   Serial.println(F("ADVANCED FEATURES:"));
   Serial.println(F("  #MARQUEE <y speed text> - Scroll text"));
@@ -1172,6 +1341,8 @@ void help() {
   Serial.println(F("  #BAR <x y w h val,val,...> - Bar chart"));
   Serial.println(F("  #BITMAP <x y w h hex> - Monochrome bitmap"));
   Serial.println(F("  #TEXTBOX <x y w h text> - Bordered text"));
+  Serial.println(F("  #GAUGE <x y r val min max> - Analog gauge"));
+  Serial.println(F("  #LEVEL <x y w h val max H|V> - Level meter"));
   Serial.println();
   Serial.println(F("SCREEN COMMANDS:"));
   Serial.println(F("  #CLEAR / #CLR   - Clear screen"));
