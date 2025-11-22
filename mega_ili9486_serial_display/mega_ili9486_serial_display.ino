@@ -45,7 +45,13 @@ void setup() {
   Serial.println(ID, HEX);
 
   // ILI9486 specific handling
-  if (ID == 0x9486 || ID == 0x00D3 || ID == 0xD3D3) {
+  // ILI9486 may return different IDs depending on shield/breakout board
+  if (ID == 0x9486 || ID == 0x9488 || ID == 0x00D3 || ID == 0xD3D3) {
+    ID = 0x9486;
+    Serial.println(F("Detected as ILI9486"));
+  } else if (ID == 0x0000 || ID == 0xFFFF) {
+    // Some displays return 0x0000 or 0xFFFF on first read
+    Serial.println(F("Unknown ID, defaulting to ILI9486"));
     ID = 0x9486;
   }
 
@@ -77,7 +83,7 @@ void setup() {
 
   posY = tft.getCursorY();
 
-  cmd.reserve(500); // Mega has plenty of RAM
+  cmd.reserve(500); // Mega has plenty of RAM (max command length ~490 chars)
 
   Serial.println(F("Ready. Type #HELP for commands"));
 }
@@ -102,16 +108,17 @@ void serialEvent() {
 }
 
 // Calculate lines for text
-uint8_t getLines(const String& txt) {
-  uint8_t len = txt.length();
+uint16_t getLines(const String& txt) {
+  uint16_t len = txt.length();
   if (len == 0) return 1;
-  uint8_t charsPerLine = screenW / (BASE_CHAR_W * textSize);
+  uint16_t charsPerLine = screenW / (BASE_CHAR_W * textSize);
+  if (charsPerLine == 0) charsPerLine = 1; // Safety check
   return (len + charsPerLine - 1) / charsPerLine;
 }
 
 // Display text with wrapping fix
 void showText(const String& txt) {
-  uint8_t lines = getLines(txt);
+  uint16_t lines = getLines(txt);
   uint16_t lineH = BASE_CHAR_H * textSize;
   uint16_t needH = lines * lineH;
 
@@ -124,7 +131,8 @@ void showText(const String& txt) {
   tft.setCursor(posX, posY);
 
   // For long text, print in chunks
-  uint8_t charsPerLine = screenW / (BASE_CHAR_W * textSize);
+  uint16_t charsPerLine = screenW / (BASE_CHAR_W * textSize);
+  if (charsPerLine == 0) charsPerLine = 1; // Safety check
   if (txt.length() > charsPerLine) {
     int start = 0;
     while (start < txt.length()) {
@@ -302,7 +310,7 @@ void processCmd(String c) {
       help();
 
     } else if (c == "#ID") {
-      Serial.println("COM LCD MEGA ILI9486");
+      Serial.println(F("COM LCD MEGA ILI9486"));
 
     } else {
       Serial.println(F("?"));
@@ -691,13 +699,12 @@ void testColors() {
   int x = 10, y = 10;
   int boxW = 60, boxH = 40;
 
-  String colors[] = {"RED", "GREEN", "BLUE", "YELLOW", "CYAN", "MAGENTA",
-                     "ORANGE", "PINK", "PURPLE", "BROWN", "OLIVE", "NAVY"};
+  // Use direct color values to save RAM (no String array needed)
+  uint16_t colors[] = {0xF800, 0x07E0, 0x001F, 0xFFE0, 0x07FF, 0xF81F,
+                       0xFD20, 0xFC9F, 0x8010, 0x9A60, 0x7BE0, 0x0010};
 
   for (int i = 0; i < 12; i++) {
-    String col = colors[i];
-    uint16_t c = getColorFromName(col);
-    tft.fillRect(x, y, boxW, boxH, c);
+    tft.fillRect(x, y, boxW, boxH, colors[i]);
 
     x += boxW + 5;
     if (x > screenW - boxW) {
@@ -713,6 +720,9 @@ void testColors() {
 void testShapes() {
   Serial.println(F("Testing shapes..."));
   tft.fillScreen(0);
+
+  // Note: Coordinates optimized for portrait mode (320x480)
+  // May render partially off-screen in landscape mode
 
   // Rectangles
   tft.drawRect(10, 10, 80, 60, 0xF800);
