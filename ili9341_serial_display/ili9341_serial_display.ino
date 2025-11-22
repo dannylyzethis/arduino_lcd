@@ -308,6 +308,12 @@ void processCmd(String c) {
       uint8_t addr = strtol(c.substring(3).c_str(), NULL, 16);
       Serial.println(registers[addr], HEX);
 
+    } else if (c == "#REGINFO") {
+      regInfo();
+
+    } else if (c == "#SHOWREGS") {
+      showRegs();
+
     } else if (c == "#HELP") {
       help();
     }
@@ -411,6 +417,8 @@ void help() {
   Serial.println(F("#SHOWBTNS / #HIDEBTNS - Touch buttons"));
   Serial.println(F("#FPGABYTES hex - Send bytes to FPGA"));
   Serial.println(F(">>>text - FPGA passthrough"));
+  Serial.println(F("#REGINFO - FPGA register info"));
+  Serial.println(F("#SHOWREGS - Display regs on LCD"));
   Serial.println(F(""));
   Serial.println(F("=FPGA Frame Modes (R06)="));
   Serial.println(F("0=Raw 1=LenPrefix 2=Term 3=Both"));
@@ -422,6 +430,73 @@ void help() {
   Serial.println(F("#W 07 1 - Rotate landscape"));
   Serial.println(F("#W 05 115200 - Set FPGA baud"));
   Serial.println(F("#FPGABYTES 54 45 4D 50 - Send TEMP"));
+}
+
+void regInfo() {
+  Serial.println(F("=FPGA User Registers (R08-R0F)="));
+  Serial.println(F("R08 = Custom parameter 0 (32-bit)"));
+  Serial.println(F("R09 = Custom parameter 1 (32-bit)"));
+  Serial.println(F("R0A = Custom parameter 2 (32-bit)"));
+  Serial.println(F("R0B = Custom parameter 3 (32-bit)"));
+  Serial.println(F("R0C = Custom parameter 4 (32-bit)"));
+  Serial.println(F("R0D = Custom parameter 5 (32-bit)"));
+  Serial.println(F("R0E = Custom parameter 6 (32-bit)"));
+  Serial.println(F("R0F = Custom parameter 7 (32-bit)"));
+  Serial.println(F(""));
+  Serial.println(F("Usage: Store any 32-bit values"));
+  Serial.println(F("FPGA can read these via serial protocol"));
+  Serial.println(F("Define meaning based on your FPGA design"));
+  Serial.println(F(""));
+  Serial.println(F("Examples:"));
+  Serial.println(F("  Thresholds, setpoints, config values"));
+  Serial.println(F("  State machine parameters"));
+  Serial.println(F("  Calibration data, timing params"));
+}
+
+void showRegs() {
+  tft.fillScreen(0);
+  tft.setTextSize(1);
+  tft.setTextColor(0xFFFF);
+  tft.setCursor(0, 0);
+
+  tft.println(F("=Display Settings="));
+  tft.print(F("Top: 0x"));
+  tft.print(registers[REG_TOP_COLOR], HEX);
+  tft.print(F(" Sz:"));
+  tft.println(registers[REG_TOP_SIZE]);
+
+  tft.print(F("Bot: 0x"));
+  tft.print(registers[REG_BOT_COLOR], HEX);
+  tft.print(F(" Sz:"));
+  tft.println(registers[REG_BOT_SIZE]);
+
+  tft.println();
+  tft.println(F("=FPGA Settings="));
+  tft.print(F("Baud: "));
+  tft.println(registers[REG_FPGA_BAUD]);
+
+  tft.print(F("Frame: 0x"));
+  tft.print(registers[REG_FPGA_FRAME], HEX);
+  tft.print(F(" Rot:"));
+  tft.println(registers[REG_ROTATION]);
+
+  tft.println();
+  tft.println(F("=User Registers="));
+  for (int i = REG_FPGA_USER0; i <= REG_FPGA_USER7; i++) {
+    tft.print(F("R"));
+    if (i < 16) tft.print(F("0"));
+    tft.print(i, HEX);
+    tft.print(F("=0x"));
+    tft.println(registers[i], HEX);
+  }
+
+  tft.println();
+  tft.setTextColor(0x07E0);
+  tft.println(F("Send any command to continue"));
+
+  topPosY = 0;
+  bottomPosY = bottomMinY;
+  drawDivider();
 }
 
 void initButtons() {
