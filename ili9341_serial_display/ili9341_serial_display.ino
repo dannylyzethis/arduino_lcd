@@ -1,8 +1,14 @@
-// ILI9341 Split Screen: Top=Commands, Bottom=FPGA (pins 12/13)
+/*
+ * ILI9341 Split Screen MEGA A+ EDITION
+ * Arduino Mega 2560 - Production Ready
+ * Top=Commands, Bottom=FPGA/Serial Devices
+ * Hardware Serial1 for FPGA (TX1=18, RX1=19)
+ * Optional Serial2 & Serial3 for additional devices
+ * 8KB RAM allows advanced features
+ */
 
 #include <Adafruit_GFX.h>
 #include <MCUFRIEND_kbv.h>
-#include <SoftwareSerial.h>
 #include <TouchScreen.h>
 
 MCUFRIEND_kbv tft;
@@ -16,17 +22,20 @@ MCUFRIEND_kbv tft;
 #define TS_MAXX 900
 #define TS_MINY 70
 #define TS_MAXY 920
-
 #define MINPRESSURE 10
 #define MAXPRESSURE 1000
 
 TouchScreen ts = TouchScreen(XP, YP, XM, YM, 300);
 
-// FPGA Serial (RX=12, TX=13)
-SoftwareSerial fpgaSerial(12, 13);
-
+// Display constants
 #define BASE_CHAR_W 6
 #define BASE_CHAR_H 8
+#define MAX_CMD_LEN 200        // Mega has 8KB RAM
+#define MAX_FPGA_BUF 150
+#define MAX_HEX_BYTES 128
+#define CMD_HISTORY_SIZE 5
+
+// Screen layout
 uint16_t screenW = 240;
 uint16_t screenH = 320;
 uint16_t dividerY;
@@ -39,31 +48,56 @@ bool topOpaqueText = false;
 uint16_t bottomPosX = 0;
 uint16_t bottomPosY = 0;
 
+// Command handling
 String cmd = "";
 bool cmdReady = false;
-
 String fpgaBuffer = "";
 
-#define NUM_REGISTERS 16
+// Command history
+String cmdHistory[CMD_HISTORY_SIZE];
+uint8_t historyIndex = 0;
+uint8_t historyCount = 0;
+
+// Registers - expanded to 32 for Mega
+#define NUM_REGISTERS 32
 uint32_t registers[NUM_REGISTERS];
 
-#define REG_TOP_COLOR    0x00
-#define REG_TOP_BGCOLOR  0x01
-#define REG_TOP_SIZE     0x02
-#define REG_BOT_COLOR    0x03
-#define REG_BOT_SIZE     0x04
-#define REG_FPGA_BAUD    0x05
-#define REG_FPGA_FRAME   0x06
-#define REG_ROTATION     0x07
-#define REG_FPGA_USER0   0x08
-#define REG_FPGA_USER1   0x09
-#define REG_FPGA_USER2   0x0A
-#define REG_FPGA_USER3   0x0B
-#define REG_FPGA_USER4   0x0C
-#define REG_FPGA_USER5   0x0D
-#define REG_FPGA_USER6   0x0E
-#define REG_FPGA_USER7   0x0F
+// Register definitions
+#define REG_TOP_COLOR      0x00
+#define REG_TOP_BGCOLOR    0x01
+#define REG_TOP_SIZE       0x02
+#define REG_BOT_COLOR      0x03
+#define REG_BOT_SIZE       0x04
+#define REG_FPGA1_BAUD     0x05
+#define REG_FPGA_FRAME     0x06
+#define REG_ROTATION       0x07
+#define REG_FPGA_USER0     0x08
+#define REG_FPGA_USER1     0x09
+#define REG_FPGA_USER2     0x0A
+#define REG_FPGA_USER3     0x0B
+#define REG_FPGA_USER4     0x0C
+#define REG_FPGA_USER5     0x0D
+#define REG_FPGA_USER6     0x0E
+#define REG_FPGA_USER7     0x0F
+// New Mega-specific registers
+#define REG_FPGA2_BAUD     0x10
+#define REG_FPGA3_BAUD     0x11
+#define REG_FPGA_SELECT    0x12  // Which serial to use (1,2,3)
+#define REG_BOT_BGCOLOR    0x13
+#define REG_DIVIDER_COLOR  0x14
+#define REG_DIVIDER_POS    0x15  // Custom divider position (%)
+#define REG_LOG_ENABLE     0x16
+#define REG_STATS_ENABLE   0x17
+#define REG_TIMESTAMP      0x18
+#define REG_MEGA_USER0     0x19
+#define REG_MEGA_USER1     0x1A
+#define REG_MEGA_USER2     0x1B
+#define REG_MEGA_USER3     0x1C
+#define REG_MEGA_USER4     0x1D
+#define REG_MEGA_USER5     0x1E
+#define REG_MEGA_USER6     0x1F
 
+// Touch buttons
 enum ResponseType {
   RESP_NONE,
   RESP_TEMP,
@@ -71,6 +105,7 @@ enum ResponseType {
   RESP_COUNTER,
   RESP_RAW
 };
+
 struct Button {
   uint16_t x, y, w, h;
   const char* label;
@@ -79,6 +114,7 @@ struct Button {
   ResponseType respType;
   uint16_t color;
 };
+
 #define NUM_BUTTONS 4
 Button buttons[NUM_BUTTONS];
 bool buttonsVisible = false;
@@ -88,49 +124,77 @@ unsigned long lastTouch = 0;
 #define TOUCH_DEBOUNCE 200
 #define RESPONSE_TIMEOUT 500
 
+// Statistics
+uint32_t cmdCount = 0;
+uint32_t fpgaBytesRx = 0;
+uint32_t fpgaBytesTx = 0;
+
 void initRegisters() {
-  registers[REG_TOP_COLOR] = 0xFFFF;
-  registers[REG_TOP_BGCOLOR] = 0x0000;
+  registers[REG_TOP_COLOR] = 0xFFFF;      // White
+  registers[REG_TOP_BGCOLOR] = 0x0000;    // Black
   registers[REG_TOP_SIZE] = 2;
-  registers[REG_BOT_COLOR] = 0x07E0;
+  registers[REG_BOT_COLOR] = 0x07E0;      // Green
+  registers[REG_BOT_BGCOLOR] = 0x0000;    // Black
   registers[REG_BOT_SIZE] = 1;
-  registers[REG_FPGA_BAUD] = 9600;
+  registers[REG_FPGA1_BAUD] = 9600;
+  registers[REG_FPGA2_BAUD] = 9600;
+  registers[REG_FPGA3_BAUD] = 9600;
   registers[REG_FPGA_FRAME] = 0;
   registers[REG_ROTATION] = 0;
+  registers[REG_FPGA_SELECT] = 1;         // Default to Serial1
+  registers[REG_DIVIDER_COLOR] = 0xFFFF;  // White
+  registers[REG_DIVIDER_POS] = 50;        // 50% split
+  registers[REG_LOG_ENABLE] = 0;
+  registers[REG_STATS_ENABLE] = 0;
+  registers[REG_TIMESTAMP] = 0;
+
   for (int i = REG_FPGA_USER0; i <= REG_FPGA_USER7; i++) {
     registers[i] = 0;
+  }
+  for (int i = REG_MEGA_USER0; i <= REG_MEGA_USER6; i++) {
+    registers[i] = 0;
+  }
+}
+
+HardwareSerial& getFPGASerial() {
+  switch (registers[REG_FPGA_SELECT]) {
+    case 2: return Serial2;
+    case 3: return Serial3;
+    default: return Serial1;
   }
 }
 
 void setup() {
   initRegisters();
 
-  Serial.begin(9600);
-  fpgaSerial.begin(registers[REG_FPGA_BAUD]);
+  Serial.begin(9600);      // USB/PC connection
+  Serial1.begin(registers[REG_FPGA1_BAUD]);  // FPGA1 (pins 18/19)
+  Serial2.begin(registers[REG_FPGA2_BAUD]);  // FPGA2 (pins 16/17)
+  Serial3.begin(registers[REG_FPGA3_BAUD]);  // FPGA3 (pins 14/15)
 
   uint16_t ID = tft.readID();
   if (ID == 0xD3D3 || ID == 0x00D3) ID = 0x9341;
   tft.begin(ID);
-  tft.setRotation(0);
+  tft.setRotation(registers[REG_ROTATION]);
   screenW = tft.width();
   screenH = tft.height();
 
-  dividerY = screenH / 2;
-  topMaxY = dividerY - 2;
-  bottomMinY = dividerY + 2;
-  bottomMaxY = screenH;
-  bottomPosY = bottomMinY;
+  updateDividerPosition();
 
   tft.fillScreen(0);
   drawDivider();
   topPosY = 0;
   bottomPosY = bottomMinY;
 
-  cmd.reserve(100);
-  fpgaBuffer.reserve(80);
+  cmd.reserve(MAX_CMD_LEN);
+  fpgaBuffer.reserve(MAX_FPGA_BUF);
   initButtons();
 
-  Serial.println(F("S.A.M. REG-v1.0"));
+  Serial.println(F("=== Arduino MEGA A+ ==="));
+  Serial.println(F("ILI9341 Split Screen v3.0"));
+  Serial.println(F("Serial1/2/3 FPGA Support"));
+  Serial.print(F("RAM: 8KB | Regs: "));
+  Serial.println(NUM_REGISTERS);
 }
 
 void loop() {
@@ -144,19 +208,33 @@ void loop() {
     cmdReady = false;
   }
 
-  while (fpgaSerial.available()) {
-    char c = fpgaSerial.read();
-    Serial.write(c);
+  // Check all FPGA serials
+  checkFPGASerial(Serial1, 1);
+  checkFPGASerial(Serial2, 2);
+  checkFPGASerial(Serial3, 3);
+}
+
+void checkFPGASerial(HardwareSerial& serial, uint8_t id) {
+  while (serial.available()) {
+    char c = serial.read();
+    Serial.write(c);  // Echo to PC
+    fpgaBytesRx++;
+
     if (c == '\n' || c == '\r') {
       if (fpgaBuffer.length() > 0) {
+        if (registers[REG_STATS_ENABLE]) {
+          fpgaBuffer = "S" + String(id) + ":" + fpgaBuffer;
+        }
         showTextBottom(fpgaBuffer);
         fpgaBuffer = "";
       }
     } else if (isPrintable(c)) {
-      fpgaBuffer += c;
-      if (fpgaBuffer.length() > 70) {
+      if (fpgaBuffer.length() < MAX_FPGA_BUF) {
+        fpgaBuffer += c;
+      } else {
         showTextBottom(fpgaBuffer);
         fpgaBuffer = "";
+        fpgaBuffer += c;
       }
     }
   }
@@ -168,29 +246,52 @@ void serialEvent() {
     if (c == '\n') {
       cmdReady = true;
     } else if (c != '\r') {
-      cmd += c;
+      // Buffer overflow protection
+      if (cmd.length() < MAX_CMD_LEN) {
+        cmd += c;
+      } else {
+        cmd = "";
+        Serial.println(F("ERR:CMD_TOO_LONG"));
+        while (Serial.available() && Serial.read() != '\n');
+        cmdReady = false;
+        return;
+      }
     }
   }
 }
 
+void updateDividerPosition() {
+  uint8_t divPercent = constrain(registers[REG_DIVIDER_POS], 10, 90);
+  dividerY = (screenH * divPercent) / 100;
+  topMaxY = dividerY - 2;
+  bottomMinY = dividerY + 2;
+  bottomMaxY = screenH;
+}
+
 void drawDivider() {
-  tft.drawLine(0, dividerY, screenW, dividerY, 0xFFFF);
+  uint16_t color = registers[REG_DIVIDER_COLOR];
+  tft.drawLine(0, dividerY, screenW, dividerY, color);
 }
-uint8_t getLines(const String& txt) {
-  uint8_t len = txt.length();
+
+uint16_t getLines(const String& txt) {
+  uint16_t len = txt.length();
   if (len == 0) return 1;
-  uint8_t charsPerLine = screenW / (BASE_CHAR_W * registers[REG_TOP_SIZE]);
+  uint16_t charsPerLine = screenW / (BASE_CHAR_W * registers[REG_TOP_SIZE]);
+  if (charsPerLine == 0) return 1;
   return (len + charsPerLine - 1) / charsPerLine;
 }
-uint8_t getLinesBottom(const String& txt) {
-  uint8_t len = txt.length();
+
+uint16_t getLinesBottom(const String& txt) {
+  uint16_t len = txt.length();
   if (len == 0) return 1;
-  uint8_t charsPerLine = screenW / (BASE_CHAR_W * registers[REG_BOT_SIZE]);
+  uint16_t charsPerLine = screenW / (BASE_CHAR_W * registers[REG_BOT_SIZE]);
+  if (charsPerLine == 0) return 1;
   return (len + charsPerLine - 1) / charsPerLine;
 }
+
 void showText(const String& txt) {
   uint8_t ts = registers[REG_TOP_SIZE];
-  uint8_t lines = getLines(txt);
+  uint16_t lines = getLines(txt);
   uint16_t lineH = BASE_CHAR_H * ts;
   uint16_t needH = lines * lineH;
 
@@ -198,6 +299,7 @@ void showText(const String& txt) {
     tft.fillRect(0, 0, screenW, topMaxY, 0x0000);
     topPosY = 0;
   }
+
   tft.setTextSize(ts);
   if (topOpaqueText) {
     tft.setTextColor(registers[REG_TOP_COLOR], registers[REG_TOP_BGCOLOR]);
@@ -206,7 +308,9 @@ void showText(const String& txt) {
   }
   tft.setCursor(topPosX, topPosY);
 
-  uint8_t charsPerLine = screenW / (BASE_CHAR_W * ts);
+  uint16_t charsPerLine = screenW / (BASE_CHAR_W * ts);
+  if (charsPerLine == 0) charsPerLine = 1;
+
   if (txt.length() > charsPerLine) {
     int start = 0;
     while (start < txt.length()) {
@@ -231,19 +335,22 @@ void showText(const String& txt) {
 
 void showTextBottom(const String& txt) {
   uint8_t bs = registers[REG_BOT_SIZE];
-  uint8_t lines = getLinesBottom(txt);
+  uint16_t lines = getLinesBottom(txt);
   uint16_t lineH = BASE_CHAR_H * bs;
   uint16_t needH = lines * lineH;
 
   if (bottomPosY + needH > bottomMaxY) {
-    tft.fillRect(0, bottomMinY, screenW, bottomMaxY - bottomMinY, 0x0000);
+    tft.fillRect(0, bottomMinY, screenW, bottomMaxY - bottomMinY, registers[REG_BOT_BGCOLOR]);
     bottomPosY = bottomMinY;
   }
+
   tft.setTextSize(bs);
   tft.setTextColor(registers[REG_BOT_COLOR]);
   tft.setCursor(bottomPosX, bottomPosY);
 
-  uint8_t charsPerLine = screenW / (BASE_CHAR_W * bs);
+  uint16_t charsPerLine = screenW / (BASE_CHAR_W * bs);
+  if (charsPerLine == 0) charsPerLine = 1;
+
   if (txt.length() > charsPerLine) {
     int start = 0;
     while (start < txt.length()) {
@@ -265,68 +372,196 @@ void showTextBottom(const String& txt) {
   if (bottomPosY >= bottomMaxY) bottomPosY = bottomMinY;
   bottomPosX = 0;
 }
+
+void addToHistory(const String& c) {
+  if (c.length() == 0) return;
+  cmdHistory[historyIndex] = c;
+  historyIndex = (historyIndex + 1) % CMD_HISTORY_SIZE;
+  if (historyCount < CMD_HISTORY_SIZE) historyCount++;
+}
+
 void processCmd(String c) {
   c.trim();
+  if (c.length() == 0) return;
 
+  addToHistory(c);
+  cmdCount++;
+
+  // FPGA passthrough
   if (c.startsWith(">>>")) {
     String data = c.substring(3);
     data.trim();
-    fpgaSerial.println(data);
+    HardwareSerial& fpga = getFPGASerial();
+    fpga.println(data);
+    fpgaBytesTx += data.length() + 2;
     return;
   }
 
   if (c.startsWith("#")) {
     c.toUpperCase();
-    
+
     if (c == "#CLR") {
       tft.fillScreen(0);
       topPosX = topPosY = 0;
       bottomPosX = 0;
       bottomPosY = bottomMinY;
       drawDivider();
+      Serial.println(F("OK:CLR"));
 
     } else if (c.startsWith("#FPGABYTES ")) {
       String hexData = c.substring(11);
       hexData.trim();
-      sendHexBytes(hexData);
+      int sent = sendHexBytes(hexData);
+      Serial.print(F("OK:SENT_"));
+      Serial.println(sent);
+
+    } else if (c.startsWith("#FPGASEL ")) {
+      uint8_t sel = c.substring(9).toInt();
+      if (sel >= 1 && sel <= 3) {
+        registers[REG_FPGA_SELECT] = sel;
+        Serial.print(F("OK:FPGA"));
+        Serial.println(sel);
+      } else {
+        Serial.println(F("ERR:FPGA_SEL_1_2_3"));
+      }
 
     } else if (c == "#SHOWBTNS") {
       showButtons();
+      Serial.println(F("OK:BTNS_ON"));
 
     } else if (c == "#HIDEBTNS") {
       hideButtons();
+      Serial.println(F("OK:BTNS_OFF"));
 
     } else if (c.startsWith("#W ")) {
-      String params = c.substring(3);
-      params.trim();
-      int sp = params.indexOf(' ');
-      if (sp > 0) {
-        uint8_t addr = strtol(params.substring(0, sp).c_str(), NULL, 16);
-        uint32_t value = strtoul(params.substring(sp + 1).c_str(), NULL, 16);
-        writeRegister(addr, value);
-      }
+      parseRegWrite(c.substring(3));
 
     } else if (c.startsWith("#R ")) {
       uint8_t addr = strtol(c.substring(3).c_str(), NULL, 16);
-      Serial.println(registers[addr], HEX);
+      if (addr < NUM_REGISTERS) {
+        Serial.print(F("R"));
+        if (addr < 16) Serial.print("0");
+        Serial.print(addr, HEX);
+        Serial.print(F("=0x"));
+        Serial.println(registers[addr], HEX);
+      } else {
+        Serial.println(F("ERR:INVALID_REG_ADDR"));
+      }
 
     } else if (c == "#REGINFO") {
       regInfo();
 
+    } else if (c == "#HISTORY") {
+      showHistory();
+
+    } else if (c == "#STATS") {
+      showStats();
+
+    } else if (c.startsWith("#TRIANGLE ")) {
+      parseTriangle(c.substring(10));
+
+    } else if (c.startsWith("#ROUNDRECT ")) {
+      parseRoundRect(c.substring(11));
+
+    } else if (c.startsWith("#ARC ")) {
+      parseArc(c.substring(5));
+
     } else if (c == "#HELP") {
       help();
+
+    } else {
+      Serial.print(F("ERR:UNKNOWN_CMD:"));
+      Serial.println(c);
     }
   } else {
     showText(c);
   }
 }
 
+void parseRegWrite(String params) {
+  params.trim();
+  int sp = params.indexOf(' ');
+  if (sp > 0) {
+    uint8_t addr = strtol(params.substring(0, sp).c_str(), NULL, 16);
+    uint32_t value = strtoul(params.substring(sp + 1).c_str(), NULL, 16);
+    if (addr < NUM_REGISTERS) {
+      writeRegister(addr, value);
+      Serial.print(F("OK:R"));
+      if (addr < 16) Serial.print("0");
+      Serial.print(addr, HEX);
+      Serial.print(F("=0x"));
+      Serial.println(value, HEX);
+    } else {
+      Serial.println(F("ERR:INVALID_REG_ADDR"));
+    }
+  } else {
+    Serial.println(F("ERR:W_NEEDS_ADDR_VALUE"));
+  }
+}
+
+// Generic parameter parser
+uint8_t parseParams(const String& p, int* values, uint8_t maxParams) {
+  uint8_t count = 0;
+  int last = -1;
+  for (int j = 0; j <= p.length() && count < maxParams; j++) {
+    if (j == p.length() || p[j] == ' ') {
+      if (j > last + 1) {
+        values[count++] = p.substring(last + 1, j).toInt();
+      }
+      last = j;
+    }
+  }
+  return count;
+}
+
+void parseTriangle(String p) {
+  int v[6];
+  if (parseParams(p, v, 6) == 6) {
+    tft.drawTriangle(v[0], v[1], v[2], v[3], v[4], v[5], registers[REG_TOP_COLOR]);
+    Serial.println(F("OK:TRIANGLE"));
+  } else {
+    Serial.println(F("ERR:TRIANGLE_NEEDS_6_PARAMS"));
+  }
+}
+
+void parseRoundRect(String p) {
+  int v[5];
+  if (parseParams(p, v, 5) == 5) {
+    if (v[2] > 0 && v[3] > 0 && v[4] >= 0) {
+      tft.drawRoundRect(v[0], v[1], v[2], v[3], v[4], registers[REG_TOP_COLOR]);
+      Serial.println(F("OK:ROUNDRECT"));
+    } else {
+      Serial.println(F("ERR:INVALID_ROUNDRECT_DIMS"));
+    }
+  } else {
+    Serial.println(F("ERR:ROUNDRECT_NEEDS_5_PARAMS"));
+  }
+}
+
+void parseArc(String p) {
+  int v[6];
+  if (parseParams(p, v, 6) == 6) {
+    // Approximate arc with lines (GFX library doesn't have arc primitive)
+    int x = v[0], y = v[1], r = v[2];
+    int start = v[3], end = v[4];
+    for (int angle = start; angle <= end; angle += 5) {
+      float rad = angle * 3.14159 / 180.0;
+      int x1 = x + r * cos(rad);
+      int y1 = y + r * sin(rad);
+      tft.drawPixel(x1, y1, registers[REG_TOP_COLOR]);
+    }
+    Serial.println(F("OK:ARC"));
+  } else {
+    Serial.println(F("ERR:ARC_NEEDS_6_PARAMS"));
+  }
+}
+
 int sendHexBytes(String hexStr) {
-  uint8_t buffer[64];
+  uint8_t buffer[MAX_HEX_BYTES];
   int byteCount = 0;
   int startIdx = 0;
 
-  while (startIdx < hexStr.length() && byteCount < 64) {
+  while (startIdx < hexStr.length() && byteCount < MAX_HEX_BYTES) {
     while (startIdx < hexStr.length() && hexStr[startIdx] == ' ') {
       startIdx++;
     }
@@ -353,21 +588,23 @@ int sendHexBytes(String hexStr) {
     startIdx = endIdx;
   }
 
+  HardwareSerial& fpga = getFPGASerial();
   uint8_t mode = registers[REG_FPGA_FRAME] & 0xFF;
   uint8_t termChar = (registers[REG_FPGA_FRAME] >> 8) & 0xFF;
 
   if (mode == 1 || mode == 3) {
-    fpgaSerial.write((uint8_t)byteCount);
+    fpga.write((uint8_t)byteCount);
   }
 
   for (int i = 0; i < byteCount; i++) {
-    fpgaSerial.write(buffer[i]);
+    fpga.write(buffer[i]);
   }
 
   if (mode == 2 || mode == 3) {
-    fpgaSerial.write(termChar);
+    fpga.write(termChar);
   }
 
+  fpgaBytesTx += byteCount;
   return byteCount;
 }
 
@@ -375,9 +612,15 @@ void writeRegister(uint8_t addr, uint32_t value) {
   if (addr >= NUM_REGISTERS) return;
   registers[addr] = value;
 
-  if (addr == REG_FPGA_BAUD) {
-    fpgaSerial.end();
-    fpgaSerial.begin(value);
+  if (addr == REG_FPGA1_BAUD) {
+    Serial1.end();
+    Serial1.begin(value);
+  } else if (addr == REG_FPGA2_BAUD) {
+    Serial2.end();
+    Serial2.begin(value);
+  } else if (addr == REG_FPGA3_BAUD) {
+    Serial3.end();
+    Serial3.begin(value);
   } else if (addr == REG_TOP_BGCOLOR) {
     topOpaqueText = true;
   } else if (addr == REG_ROTATION) {
@@ -385,10 +628,7 @@ void writeRegister(uint8_t addr, uint32_t value) {
     tft.setRotation(rot);
     screenW = tft.width();
     screenH = tft.height();
-    dividerY = screenH / 2;
-    topMaxY = dividerY - 2;
-    bottomMinY = dividerY + 2;
-    bottomMaxY = screenH;
+    updateDividerPosition();
     tft.fillScreen(0);
     topPosX = topPosY = 0;
     bottomPosX = 0;
@@ -399,56 +639,101 @@ void writeRegister(uint8_t addr, uint32_t value) {
       buttonsVisible = false;
       showButtons();
     }
+  } else if (addr == REG_DIVIDER_POS) {
+    updateDividerPosition();
+    tft.fillScreen(0);
+    topPosX = topPosY = 0;
+    bottomPosX = 0;
+    bottomPosY = bottomMinY;
+    drawDivider();
+  } else if (addr == REG_DIVIDER_COLOR) {
+    drawDivider();
   }
 }
 
+void showHistory() {
+  Serial.println(F("=Command History="));
+  if (historyCount == 0) {
+    Serial.println(F("(empty)"));
+    return;
+  }
+
+  int start = (historyIndex - historyCount + CMD_HISTORY_SIZE) % CMD_HISTORY_SIZE;
+  for (uint8_t i = 0; i < historyCount; i++) {
+    int idx = (start + i) % CMD_HISTORY_SIZE;
+    Serial.print(i + 1);
+    Serial.print(F(": "));
+    Serial.println(cmdHistory[idx]);
+  }
+}
+
+void showStats() {
+  Serial.println(F("=== Statistics ==="));
+  Serial.print(F("Commands: "));
+  Serial.println(cmdCount);
+  Serial.print(F("FPGA RX: "));
+  Serial.print(fpgaBytesRx);
+  Serial.println(F(" bytes"));
+  Serial.print(F("FPGA TX: "));
+  Serial.print(fpgaBytesTx);
+  Serial.println(F(" bytes"));
+  Serial.print(F("Free RAM: "));
+  Serial.println(freeRam());
+  Serial.print(F("Active FPGA: Serial"));
+  Serial.println(registers[REG_FPGA_SELECT]);
+}
+
+int freeRam() {
+  extern int __heap_start, *__brkval;
+  int v;
+  return (int) &v - (__brkval == 0 ? (int) &__heap_start : (int) __brkval);
+}
+
 void help() {
-  Serial.println(F("=Register System="));
-  Serial.println(F("R00=TopColor R01=TopBG R02=TopSize"));
-  Serial.println(F("R03=BotColor R04=BotSize"));
-  Serial.println(F("R05=FPGABaud R06=FPGAFrame R07=Rotation"));
-  Serial.println(F("R08-0F=FPGA User Registers"));
-  Serial.println(F(""));
+  Serial.println(F("== MEGA A+ Edition =="));
+  Serial.println(F("=Register System (32 regs)="));
+  Serial.println(F("R00-07: Display & FPGA1"));
+  Serial.println(F("R08-0F: FPGA User Data"));
+  Serial.println(F("R10-1F: Mega Features"));
+  Serial.println();
+  Serial.println(F("Key Registers:"));
+  Serial.println(F("  R12=FPGA Select (1/2/3)"));
+  Serial.println(F("  R13=Bot BG Color"));
+  Serial.println(F("  R14=Divider Color"));
+  Serial.println(F("  R15=Divider Pos (%)"));
+  Serial.println();
   Serial.println(F("=Commands="));
-  Serial.println(F("#W addr val - Write register (hex)"));
+  Serial.println(F("#W addr val - Write reg (hex)"));
   Serial.println(F("#R addr - Read register"));
   Serial.println(F("#CLR - Clear screen"));
-  Serial.println(F("#SHOWBTNS / #HIDEBTNS - Touch buttons"));
-  Serial.println(F("#FPGABYTES hex - Send bytes to FPGA"));
+  Serial.println(F("#FPGASEL <1|2|3> - Select FPGA"));
+  Serial.println(F("#FPGABYTES hex - Send to FPGA"));
   Serial.println(F(">>>text - FPGA passthrough"));
-  Serial.println(F("#REGINFO - FPGA register info"));
-  Serial.println(F(""));
-  Serial.println(F("=FPGA Frame Modes (R06)="));
-  Serial.println(F("0=Raw 1=LenPrefix 2=Term 3=Both"));
-  Serial.println(F("Example: #W 06 02FF (mode 2, term=0xFF)"));
-  Serial.println(F(""));
-  Serial.println(F("=Examples="));
-  Serial.println(F("#W 00 F800 - Set red text"));
-  Serial.println(F("#W 02 3 - Set size 3"));
-  Serial.println(F("#W 07 1 - Rotate landscape"));
-  Serial.println(F("#W 05 1C200 - Set FPGA 115200 baud"));
-  Serial.println(F("#FPGABYTES 54 45 4D 50 - Send TEMP"));
+  Serial.println(F("#SHOWBTNS / #HIDEBTNS"));
+  Serial.println(F("#TRIANGLE x1 y1 x2 y2 x3 y3"));
+  Serial.println(F("#ROUNDRECT x y w h r"));
+  Serial.println(F("#ARC x y r start end"));
+  Serial.println(F("#HISTORY - Show cmd history"));
+  Serial.println(F("#STATS - Show statistics"));
+  Serial.println(F("#REGINFO - Full reg list"));
+  Serial.println();
+  Serial.println(F("=Hardware Serial Ports="));
+  Serial.println(F("Serial1: TX1=18, RX1=19"));
+  Serial.println(F("Serial2: TX2=16, RX2=17"));
+  Serial.println(F("Serial3: TX3=14, RX3=15"));
 }
 
 void regInfo() {
-  Serial.println(F("=FPGA User Registers (R08-R0F)="));
-  Serial.println(F("R08 = Custom parameter 0 (32-bit)"));
-  Serial.println(F("R09 = Custom parameter 1 (32-bit)"));
-  Serial.println(F("R0A = Custom parameter 2 (32-bit)"));
-  Serial.println(F("R0B = Custom parameter 3 (32-bit)"));
-  Serial.println(F("R0C = Custom parameter 4 (32-bit)"));
-  Serial.println(F("R0D = Custom parameter 5 (32-bit)"));
-  Serial.println(F("R0E = Custom parameter 6 (32-bit)"));
-  Serial.println(F("R0F = Custom parameter 7 (32-bit)"));
-  Serial.println(F(""));
-  Serial.println(F("Usage: Store any 32-bit values"));
-  Serial.println(F("FPGA can read these via serial protocol"));
-  Serial.println(F("Define meaning based on your FPGA design"));
-  Serial.println(F(""));
-  Serial.println(F("Examples:"));
-  Serial.println(F("  Thresholds, setpoints, config values"));
-  Serial.println(F("  State machine parameters"));
-  Serial.println(F("  Calibration data, timing params"));
+  Serial.println(F("=Full Register Map="));
+  Serial.println(F("R00=TopCol R01=TopBG R02=TopSize"));
+  Serial.println(F("R03=BotCol R04=BotSize"));
+  Serial.println(F("R05=FPGA1Baud R06=FPGAFrame R07=Rotation"));
+  Serial.println(F("R08-0F=FPGA User (8x 32-bit)"));
+  Serial.println(F("R10=FPGA2Baud R11=FPGA3Baud"));
+  Serial.println(F("R12=FPGASelect R13=BotBG"));
+  Serial.println(F("R14=DivColor R15=DivPos(%)"));
+  Serial.println(F("R16=LogEnable R17=StatsEnable"));
+  Serial.println(F("R18=Timestamp R19-1F=Mega User"));
 }
 
 void initButtons() {
@@ -457,65 +742,16 @@ void initButtons() {
   uint16_t btnY = bottomMaxY - btnHeight - 2;
   buttonTextY = btnY - 2;
 
-  buttons[0].x = 5;
-  buttons[0].y = btnY;
-  buttons[0].w = btnWidth;
-  buttons[0].h = btnHeight;
-  buttons[0].label = "T";
-  buttons[0].cmdBytes[0] = 0x54;
-  buttons[0].cmdBytes[1] = 0x45;
-  buttons[0].cmdBytes[2] = 0x4D;
-  buttons[0].cmdBytes[3] = 0x50;
-  buttons[0].cmdLen = 4;
-  buttons[0].respType = RESP_TEMP;
-  buttons[0].color = 0xFD20;
-
-  buttons[1].x = 5 + btnWidth + 2;
-  buttons[1].y = btnY;
-  buttons[1].w = btnWidth;
-  buttons[1].h = btnHeight;
-  buttons[1].label = "S";
-  buttons[1].cmdBytes[0] = 0x53;
-  buttons[1].cmdBytes[1] = 0x54;
-  buttons[1].cmdBytes[2] = 0x41;
-  buttons[1].cmdBytes[3] = 0x54;
-  buttons[1].cmdLen = 4;
-  buttons[1].respType = RESP_STATUS;
-  buttons[1].color = 0x07E0;
-
-  buttons[2].x = 5 + (btnWidth + 2) * 2;
-  buttons[2].y = btnY;
-  buttons[2].w = btnWidth;
-  buttons[2].h = btnHeight;
-  buttons[2].label = "C";
-  buttons[2].cmdBytes[0] = 0x43;
-  buttons[2].cmdBytes[1] = 0x4E;
-  buttons[2].cmdBytes[2] = 0x54;
-  buttons[2].cmdBytes[3] = 0x52;
-  buttons[2].cmdLen = 4;
-  buttons[2].respType = RESP_COUNTER;
-  buttons[2].color = 0x07FF;
-
-  buttons[3].x = 5 + (btnWidth + 2) * 3;
-  buttons[3].y = btnY;
-  buttons[3].w = btnWidth;
-  buttons[3].h = btnHeight;
-  buttons[3].label = "D";
-  buttons[3].cmdBytes[0] = 0x44;
-  buttons[3].cmdBytes[1] = 0x41;
-  buttons[3].cmdBytes[2] = 0x54;
-  buttons[3].cmdBytes[3] = 0x41;
-  buttons[3].cmdLen = 4;
-  buttons[3].respType = RESP_RAW;
-  buttons[3].color = 0x001F;
+  buttons[0] = {5, btnY, btnWidth, btnHeight, "T", {0x54, 0x45, 0x4D, 0x50}, 4, RESP_TEMP, 0xFD20};
+  buttons[1] = {5 + btnWidth + 2, btnY, btnWidth, btnHeight, "S", {0x53, 0x54, 0x41, 0x54}, 4, RESP_STATUS, 0x07E0};
+  buttons[2] = {5 + (btnWidth + 2) * 2, btnY, btnWidth, btnHeight, "C", {0x43, 0x4E, 0x54, 0x52}, 4, RESP_COUNTER, 0x07FF};
+  buttons[3] = {5 + (btnWidth + 2) * 3, btnY, btnWidth, btnHeight, "D", {0x44, 0x41, 0x54, 0x41}, 4, RESP_RAW, 0x001F};
 }
 
 void drawButton(uint8_t idx) {
   Button &btn = buttons[idx];
-
   tft.fillRect(btn.x, btn.y, btn.w, btn.h, btn.color);
   tft.drawRect(btn.x, btn.y, btn.w, btn.h, 0xFFFF);
-
   tft.setTextColor(0x0000);
   tft.setTextSize(2);
 
@@ -531,7 +767,6 @@ void drawButton(uint8_t idx) {
 
 void showButtons() {
   if (buttonsVisible) return;
-
   bottomMaxY = buttonTextY;
   tft.fillRect(0, bottomMinY, screenW, screenH - bottomMinY, 0x0000);
   bottomPosX = 0;
@@ -547,10 +782,8 @@ void showButtons() {
 
 void hideButtons() {
   if (!buttonsVisible) return;
-
   bottomMaxY = screenH;
   tft.fillRect(0, buttonTextY, screenW, screenH - buttonTextY, 0x0000);
-
   buttonsVisible = false;
   drawDivider();
 }
@@ -560,11 +793,11 @@ void checkTouch() {
   if (now - lastTouch < TOUCH_DEBOUNCE) return;
 
   TSPoint p = ts.getPoint();
-
   pinMode(XM, OUTPUT);
   pinMode(YP, OUTPUT);
 
   if (p.z < MINPRESSURE || p.z > MAXPRESSURE) return;
+
   int16_t px, py;
   uint8_t rotation = tft.getRotation();
 
@@ -586,14 +819,13 @@ void checkTouch() {
       py = map(p.x, TS_MINX, TS_MAXX, 0, screenH);
       break;
   }
+
   for (uint8_t i = 0; i < NUM_BUTTONS; i++) {
     Button &btn = buttons[i];
     if (px >= btn.x && px < (btn.x + btn.w) &&
         py >= btn.y && py < (btn.y + btn.h)) {
-
       lastTouch = now;
       handleButtonPress(i);
-
       break;
     }
   }
@@ -601,20 +833,23 @@ void checkTouch() {
 
 void handleButtonPress(uint8_t btnIdx) {
   Button &btn = buttons[btnIdx];
+  HardwareSerial& fpga = getFPGASerial();
 
-  while (fpgaSerial.available()) {
-    fpgaSerial.read();
+  while (fpga.available()) {
+    fpga.read();
   }
 
   for (uint8_t i = 0; i < btn.cmdLen; i++) {
-    fpgaSerial.write(btn.cmdBytes[i]);
+    fpga.write(btn.cmdBytes[i]);
   }
 
   if (btn.respType != RESP_NONE) {
     processButtonResponse(btn);
   }
 }
+
 void processButtonResponse(Button &btn) {
+  HardwareSerial& fpga = getFPGASerial();
   uint8_t respBytes[8];
   uint8_t bytesRead = 0;
   unsigned long startTime = millis();
@@ -627,9 +862,10 @@ void processButtonResponse(Button &btn) {
     case RESP_RAW:     expectedBytes = 4; break;
     default: return;
   }
+
   while (bytesRead < expectedBytes && (millis() - startTime) < RESPONSE_TIMEOUT) {
-    if (fpgaSerial.available()) {
-      respBytes[bytesRead++] = fpgaSerial.read();
+    if (fpga.available()) {
+      respBytes[bytesRead++] = fpga.read();
     }
   }
 
@@ -649,14 +885,12 @@ void processButtonResponse(Button &btn) {
       }
       break;
     }
-
     case RESP_STATUS: {
       result = "0x";
       if (respBytes[0] < 16) result += "0";
       result += String(respBytes[0], HEX);
       break;
     }
-
     case RESP_COUNTER: {
       if (bytesRead >= 2) {
         uint16_t count = (respBytes[0] << 8) | respBytes[1];
@@ -664,7 +898,6 @@ void processButtonResponse(Button &btn) {
       }
       break;
     }
-
     case RESP_RAW: {
       for (uint8_t i = 0; i < bytesRead; i++) {
         if (i > 0) result += " ";
@@ -673,7 +906,6 @@ void processButtonResponse(Button &btn) {
       }
       break;
     }
-
     default:
       result = "?";
       break;
