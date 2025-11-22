@@ -1,6 +1,6 @@
 # Arduino Mega 2560 + ILI9486 Serial Display Controller
 
-Enhanced serial display controller for Arduino Mega 2560 with ILI9486 320x480 LCD display.
+**Enhanced Edition v2.1** - Professional serial display controller for Arduino Mega 2560 with ILI9486 320x480 LCD display.
 
 ## Hardware Requirements
 
@@ -22,13 +22,22 @@ This version takes advantage of the Mega's superior specifications:
 
 ### Display Features
 
-- **Text Display**: Variable size (1-10), custom positioning, auto-wrapping
-- **Shapes**: Rectangles, circles, triangles (outline and filled)
+**Basic Features:**
+- **Text Display**: Variable size (1-10), custom positioning, auto-wrapping, alignment (LEFT/CENTER/RIGHT)
+- **Shapes**: Rectangles, circles, triangles (outline and filled), rounded rectangles
 - **Lines**: Standard, horizontal, vertical, and pixel drawing
 - **Progress Bars**: Visual progress indicators
-- **Color Support**: 16-bit RGB565 with named color palette
-- **Screen Control**: Clear, rotation (0-3), reset
+- **Color Support**: 16-bit RGB565 with 12+ named colors
+- **Screen Control**: Clear, rotation (0-3), invert, reset
 - **Auto-Scroll**: Automatic screen clearing when full
+
+**Advanced Features (v2.1):**
+- **Scrolling Marquee**: Smooth horizontal text scrolling with variable speed
+- **Line Graphs**: Plot up to 100 data points with auto-scaling
+- **Bar Charts**: Display up to 20 bars with auto-scaling
+- **Bitmap Display**: Monochrome bitmap rendering from hex data
+- **Text Boxes**: Bordered text boxes with auto-centering
+- **Grid Drawing**: Configurable grid patterns for graph backgrounds
 
 ## Wiring
 
@@ -75,6 +84,7 @@ LCD_D7       ->  29
 | `<text>` | Display text on screen | `Hello World` |
 | `#SIZE <1-10>` | Set text size | `#SIZE 3` |
 | `#POS <x> <y>` | Set cursor position | `#POS 50 100` |
+| `#ALIGN <LEFT\|CENTER\|RIGHT>` | Set text alignment | `#ALIGN CENTER` |
 
 ### Color Commands
 
@@ -112,6 +122,61 @@ LCD_D7       ->  29
 
 #### Special
 - `#PROG <x> <y> <w> <h> <percent>` - Draw progress bar (0-100%)
+- `#GRID <x> <y> <w> <h> <spacing>` - Draw grid with specified spacing
+
+### Advanced Features (NEW in v2.1)
+
+#### Scrolling Marquee
+- **Command**: `#MARQUEE <y> <speed> <text>`
+- **Description**: Scrolls text horizontally across the screen
+- **Parameters**:
+  - `y`: Vertical position
+  - `speed`: Pixels to move per frame (1-100)
+  - `text`: Text to scroll
+- **Notes**: Send any serial input to stop the marquee
+- **Example**: `#MARQUEE 100 5 Breaking News: Arduino is awesome!`
+
+#### Line Graph Plotting
+- **Command**: `#GRAPH <x> <y> <w> <h> <val1,val2,val3,...>`
+- **Description**: Plots a line graph with auto-scaling
+- **Parameters**:
+  - `x, y`: Top-left corner
+  - `w, h`: Width and height of graph
+  - `values`: Comma-separated data points (up to 100)
+- **Features**: Auto-scales to min/max, draws border, smooth lines
+- **Example**: `#GRAPH 10 50 300 150 10,25,18,35,42,38,50,45`
+
+#### Bar Chart
+- **Command**: `#BAR <x> <y> <w> <h> <val1,val2,val3,...>`
+- **Description**: Displays bar chart with auto-scaling
+- **Parameters**:
+  - `x, y`: Top-left corner
+  - `w, h`: Width and height of chart
+  - `values`: Comma-separated values (up to 20)
+- **Features**: Auto-scales to maximum value, equal-width bars
+- **Example**: `#BAR 10 250 300 100 15,30,22,45,35,28`
+
+#### Monochrome Bitmap Display
+- **Command**: `#BITMAP <x> <y> <w> <h> <hexdata>`
+- **Description**: Displays 1-bit monochrome bitmap
+- **Parameters**:
+  - `x, y`: Top-left corner
+  - `w, h`: Width and height in pixels
+  - `hexdata`: Hex string (1 bit per pixel, MSB first)
+- **Example**: `#BITMAP 50 50 8 8 FF818181818181FF` (draws a box)
+- **Notes**:
+  - Each byte represents 8 pixels
+  - 1 = foreground (textColor), 0 = background (bgColor if opaque)
+  - Data is row-major order
+
+#### Text Box with Border
+- **Command**: `#TEXTBOX <x> <y> <w> <h> <text>`
+- **Description**: Draws bordered box with centered text
+- **Parameters**:
+  - `x, y`: Top-left corner
+  - `w, h`: Width and height
+  - `text`: Text to display (centered)
+- **Example**: `#TEXTBOX 50 200 200 50 STATUS: OK`
 
 ### Screen Commands
 
@@ -119,6 +184,7 @@ LCD_D7       ->  29
 |---------|-------------|---------|
 | `#CLEAR` or `#CLR` | Clear entire screen | `#CLEAR` |
 | `#ROT <0-3>` | Set rotation (0=portrait, 1=landscape, etc.) | `#ROT 1` |
+| `#INVERT <ON\|OFF>` | Invert display colors | `#INVERT ON` |
 | `#RESET` | Reset all settings to defaults | `#RESET` |
 
 ### Settings Commands
@@ -195,6 +261,66 @@ GREEN TEXT
 BLUE TEXT
 ```
 
+### Text Alignment (NEW in v2.1)
+```
+#CLEAR
+#SIZE 2
+#ALIGN LEFT
+Left aligned text
+#ALIGN CENTER
+Centered text!
+#ALIGN RIGHT
+Right aligned
+#ALIGN LEFT
+```
+
+### Scrolling Marquee (NEW in v2.1)
+```
+#CLEAR
+#SIZE 3
+#COLOR CYAN
+#MARQUEE 100 5 Welcome to Arduino Mega Display System!
+(Send any character to stop scrolling)
+```
+
+### Sensor Data Visualization (NEW in v2.1)
+```
+#CLEAR
+#SIZE 2
+Temperature Over Time:
+#COLOR YELLOW
+#FCOLOR YELLOW
+#GRAPH 10 50 300 150 20,22,21,23,25,24,26,28,27,25,23
+#POS 0 220
+Humidity Levels:
+#COLOR CYAN
+#FCOLOR CYAN
+#BAR 10 260 300 100 45,52,48,65,72,68,75
+```
+
+### Status Display with Text Boxes (NEW in v2.1)
+```
+#CLEAR
+#COLOR GREEN
+#TEXTBOX 10 10 140 40 CPU: 45°C
+#COLOR BLUE
+#TEXTBOX 170 10 140 40 RAM: 6.5KB
+#COLOR YELLOW
+#TEXTBOX 10 70 140 40 Uptime: 1h
+#COLOR RED
+#TEXTBOX 170 70 140 40 Load: 23%
+```
+
+### Custom Icon Display (NEW in v2.1)
+```
+#CLEAR
+#SIZE 1
+#POS 10 10
+Smiley Face:
+#COLOR YELLOW
+#BITMAP 80 10 16 16 03C00FF01FF83FFC7C3EF81FF81FF81FF81F7C3E3FFC1FF80FF003C0
+```
+
 ## Technical Specifications
 
 ### Display
@@ -253,16 +379,29 @@ BLUE TEXT
 
 ## Future Enhancement Ideas
 
-- [ ] Bitmap image display
 - [ ] Touch screen support
-- [ ] SD card integration for graphics
-- [ ] Animation sequences
+- [ ] SD card integration for graphics/fonts
 - [ ] Multiple serial port support
-- [ ] JSON command protocol
-- [ ] Font selection
-- [ ] Screen capture to SD
+- [ ] JSON command protocol for structured data
+- [ ] Custom font loading
+- [ ] Screen capture to SD card
+- [ ] Animation frame sequences
+- [ ] Real-time clock display
+- [ ] Weather icon library
 
 ## Version History
+
+- **v2.1** - Enhanced Edition with Advanced Features (Current)
+  - ✅ Text alignment (LEFT, CENTER, RIGHT)
+  - ✅ Scrolling marquee text
+  - ✅ Line graph plotting (up to 100 points)
+  - ✅ Bar chart visualization (up to 20 bars)
+  - ✅ Monochrome bitmap display
+  - ✅ Text boxes with borders
+  - ✅ Grid drawing
+  - ✅ Display inversion mode
+  - Bug fixes and optimizations
+  - Enhanced documentation
 
 - **v2.0** - Initial Mega + ILI9486 version
   - 320x480 resolution support
