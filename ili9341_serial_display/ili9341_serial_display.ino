@@ -129,8 +129,6 @@ void setup() {
   cmd.reserve(100);
   fpgaBuffer.reserve(80);
   initButtons();
-
-  Serial.println(F("READY"));
 }
 
 void loop() {
@@ -147,7 +145,6 @@ void loop() {
   while (fpgaSerial.available()) {
     char c = fpgaSerial.read();
     Serial.write(c);
-    Serial.flush();
     if (c == '\n' || c == '\r') {
       if (fpgaBuffer.length() > 0) {
         showTextBottom(fpgaBuffer);
@@ -230,9 +227,6 @@ void showText(const String& txt) {
   topPosX = 0;
 }
 
-void showTextTop(const String& txt) {
-  showText(txt);
-}
 void showTextBottom(const String& txt) {
   uint8_t bs = registers[REG_BOT_SIZE];
   uint8_t lines = getLinesBottom(txt);
@@ -282,18 +276,7 @@ void processCmd(String c) {
   if (c.startsWith("#")) {
     c.toUpperCase();
     
-    if (c == "#CLEAR" || c == "#CLR") {
-      tft.fillRect(0, 0, screenW, topMaxY, 0x0000);
-      topPosX = topPosY = 0;
-      drawDivider();
-
-    } else if (c == "#CLRBOT") {
-      tft.fillRect(0, bottomMinY, screenW, bottomMaxY - bottomMinY, 0x0000);
-      bottomPosX = 0;
-      bottomPosY = bottomMinY;
-      drawDivider();
-
-    } else if (c == "#CLRALL") {
+    if (c == "#CLR") {
       tft.fillScreen(0);
       topPosX = topPosY = 0;
       bottomPosX = 0;
@@ -322,15 +305,8 @@ void processCmd(String c) {
       }
 
     } else if (c.startsWith("#R ")) {
-      String params = c.substring(3);
-      params.trim();
-      uint8_t addr = strtol(params.c_str(), NULL, 16);
-      uint32_t value = readRegister(addr);
-      Serial.print(F("R"));
-      if (addr < 16) Serial.print(F("0"));
-      Serial.print(addr, HEX);
-      Serial.print(F("="));
-      Serial.println(value, HEX);
+      uint8_t addr = strtol(c.substring(3).c_str(), NULL, 16);
+      Serial.println(registers[addr], HEX);
 
     } else if (c == "#HELP") {
       help();
@@ -421,15 +397,8 @@ void writeRegister(uint8_t addr, uint32_t value) {
   }
 }
 
-uint32_t readRegister(uint8_t addr) {
-  if (addr >= NUM_REGISTERS) return 0;
-  return registers[addr];
-}
-
 void help() {
-  Serial.println(F("R00-07:Disp R08-0F:FPGA"));
-  Serial.println(F("#W/#R #CLR #SHOWBTNS"));
-  Serial.println(F("#FPGABYTES >>>text"));
+  Serial.println(F("#W #R #CLR #SHOWBTNS"));
 }
 
 void initButtons() {
@@ -573,11 +542,6 @@ void checkTouch() {
         py >= btn.y && py < (btn.y + btn.h)) {
 
       lastTouch = now;
-
-      tft.fillRect(btn.x + 1, btn.y + 1, btn.w - 2, btn.h - 2, 0xFFFF);
-      delay(50);
-      drawButton(i);
-
       handleButtonPress(i);
 
       break;
@@ -595,9 +559,6 @@ void handleButtonPress(uint8_t btnIdx) {
   for (uint8_t i = 0; i < btn.cmdLen; i++) {
     fpgaSerial.write(btn.cmdBytes[i]);
   }
-
-  Serial.print(F("[B] "));
-  Serial.println(btn.label);
 
   if (btn.respType != RESP_NONE) {
     processButtonResponse(btn);
@@ -669,7 +630,4 @@ void processButtonResponse(Button &btn) {
   }
 
   showTextBottom(result);
-
-  Serial.print(F("[F] "));
-  Serial.println(result);
 }
