@@ -1,8 +1,18 @@
 /*
  * ILI9486 Serial Display Controller - ARDUINO MEGA 2560 VERSION
- * Enhanced with extended features leveraging Mega's extra memory
+ * Enhanced Edition v2.1 with Advanced Features
  * Target: Arduino Mega 2560 + ILI9486 320x480 Display
  * Memory: 8KB RAM, 256KB Flash (vs Uno: 2KB RAM, 32KB Flash)
+ *
+ * New Features v2.1:
+ * - Text alignment (LEFT, CENTER, RIGHT)
+ * - Scrolling marquee text
+ * - Line graphs with auto-scaling
+ * - Bar charts/graphs
+ * - Monochrome bitmap display
+ * - Text boxes with borders
+ * - Grid drawing
+ * - Display inversion
  */
 
 #include <Adafruit_GFX.h>
@@ -26,6 +36,9 @@ uint16_t posX = 0;
 uint16_t posY = 0;
 uint8_t rotation = 0;
 
+// Text alignment: 0=LEFT, 1=CENTER, 2=RIGHT
+uint8_t textAlign = 0;
+
 // Serial handling - Mega has more RAM, so we can use larger buffers
 String cmd = "";
 bool cmdReady = false;
@@ -33,12 +46,18 @@ bool cmdReady = false;
 // Feature flags
 bool autoScroll = true;
 bool echoCommands = true;
+bool invertDisplay = false;
+
+// Graph data storage (for plotting)
+#define MAX_GRAPH_POINTS 100
+int16_t graphData[MAX_GRAPH_POINTS];
+uint8_t graphPointCount = 0;
 
 void setup() {
   Serial.begin(115200); // Mega can handle higher baud rates
   Serial.println(F("Arduino Mega 2560 + ILI9486"));
-  Serial.println(F("Serial Display Controller"));
-  Serial.println(F("Initializing..."));
+  Serial.println(F("Serial Display Controller v2.1"));
+  Serial.println(F("Enhanced Edition - Initializing..."));
 
   uint16_t ID = tft.readID();
   Serial.print(F("LCD ID: 0x"));
@@ -116,7 +135,7 @@ uint16_t getLines(const String& txt) {
   return (len + charsPerLine - 1) / charsPerLine;
 }
 
-// Display text with wrapping fix
+// Display text with wrapping fix and alignment support
 void showText(const String& txt) {
   uint16_t lines = getLines(txt);
   uint16_t lineH = BASE_CHAR_H * textSize;
@@ -128,7 +147,19 @@ void showText(const String& txt) {
     posY = 0;
   }
 
-  tft.setCursor(posX, posY);
+  // Calculate X position based on alignment
+  uint16_t startX = posX;
+  if (textAlign == 1) { // CENTER
+    uint16_t textWidth = txt.length() * BASE_CHAR_W * textSize;
+    startX = (screenW - textWidth) / 2;
+    if (startX > screenW) startX = 0; // Safety check for overflow
+  } else if (textAlign == 2) { // RIGHT
+    uint16_t textWidth = txt.length() * BASE_CHAR_W * textSize;
+    startX = screenW - textWidth;
+    if (startX > screenW) startX = 0; // Safety check for overflow
+  }
+
+  tft.setCursor(startX, posY);
 
   // For long text, print in chunks
   uint16_t charsPerLine = screenW / (BASE_CHAR_W * textSize);
@@ -141,7 +172,7 @@ void showText(const String& txt) {
       start = end;
       if (start < txt.length()) {
         posY += lineH;
-        tft.setCursor(0, posY);
+        tft.setCursor(textAlign == 0 ? 0 : startX, posY);
       }
     }
     tft.println();
@@ -301,6 +332,50 @@ void processCmd(String c) {
       } else if (val == "OFF") {
         echoCommands = false;
         Serial.println(F("Echo:OFF"));
+      }
+
+    } else if (c.startsWith("#ALIGN ")) {
+      String val = c.substring(7);
+      if (val == "LEFT") {
+        textAlign = 0;
+        Serial.println(F("Align:LEFT"));
+      } else if (val == "CENTER") {
+        textAlign = 1;
+        Serial.println(F("Align:CENTER"));
+      } else if (val == "RIGHT") {
+        textAlign = 2;
+        Serial.println(F("Align:RIGHT"));
+      }
+
+    } else if (c.startsWith("#MARQUEE ")) {
+      parseMarquee(c.substring(9));
+
+    } else if (c.startsWith("#GRAPH ")) {
+      parseGraph(c.substring(7));
+
+    } else if (c.startsWith("#BARGRAPH ") || c.startsWith("#BAR ")) {
+      int pos = c.indexOf(' ') + 1;
+      parseBarGraph(c.substring(pos));
+
+    } else if (c.startsWith("#BITMAP ")) {
+      parseBitmap(c.substring(8));
+
+    } else if (c.startsWith("#TEXTBOX ")) {
+      parseTextBox(c.substring(9));
+
+    } else if (c.startsWith("#GRID ")) {
+      parseGrid(c.substring(6));
+
+    } else if (c.startsWith("#INVERT ")) {
+      String val = c.substring(8);
+      if (val == "ON") {
+        tft.invertDisplay(true);
+        invertDisplay = true;
+        Serial.println(F("Invert:ON"));
+      } else if (val == "OFF") {
+        tft.invertDisplay(false);
+        invertDisplay = false;
+        Serial.println(F("Invert:OFF"));
       }
 
     } else if (c == "#RESET") {
@@ -628,6 +703,8 @@ void showInfo() {
   Serial.println(posY);
   Serial.print(F("Text Size: "));
   Serial.println(textSize);
+  Serial.print(F("Text Align: "));
+  Serial.println(textAlign == 0 ? F("LEFT") : textAlign == 1 ? F("CENTER") : F("RIGHT"));
   Serial.print(F("Chars/Line: "));
   Serial.println(screenW/(BASE_CHAR_W*textSize));
   Serial.print(F("Text Color: 0x"));
@@ -645,6 +722,10 @@ void showInfo() {
   Serial.println(autoScroll ? F("ON") : F("OFF"));
   Serial.print(F("Echo: "));
   Serial.println(echoCommands ? F("ON") : F("OFF"));
+  Serial.print(F("Invert: "));
+  Serial.println(invertDisplay ? F("ON") : F("OFF"));
+  Serial.print(F("Graph Points: "));
+  Serial.println(graphPointCount);
   Serial.print(F("Free RAM: "));
   Serial.print(getFreeRam());
   Serial.println(F(" bytes"));
@@ -669,6 +750,10 @@ void resetDisplay() {
   rotation = 0;
   autoScroll = true;
   echoCommands = true;
+  textAlign = 0; // LEFT
+  invertDisplay = false;
+  graphPointCount = 0;
+  tft.invertDisplay(false);
   tft.setRotation(0);
   tft.setTextSize(textSize);
   updateTextColors();
@@ -759,14 +844,302 @@ void testDisplay() {
   Serial.println(F("All tests complete"));
 }
 
+// ===== NEW ENHANCED FEATURES =====
+
+// Scrolling marquee text
+// Format: #MARQUEE <y> <speed> <text>
+void parseMarquee(String p) {
+  int sp1 = p.indexOf(' ');
+  if (sp1 < 0) return;
+
+  int y = p.substring(0, sp1).toInt();
+  int sp2 = p.indexOf(' ', sp1 + 1);
+  if (sp2 < 0) return;
+
+  int speed = p.substring(sp1 + 1, sp2).toInt();
+  String text = p.substring(sp2 + 1);
+
+  if (speed < 1) speed = 1;
+  if (speed > 100) speed = 100;
+
+  uint16_t textWidth = text.length() * BASE_CHAR_W * textSize;
+  int16_t x = screenW;
+
+  Serial.println(F("Marquee..."));
+
+  // Scroll text across screen
+  while (x > -(int16_t)textWidth) {
+    // Clear text area
+    tft.fillRect(0, y, screenW, BASE_CHAR_H * textSize, bgColor);
+
+    // Draw text at current position
+    tft.setCursor(x, y);
+    tft.print(text);
+
+    x -= speed;
+    delay(50); // Small delay for smooth animation
+
+    // Check for serial interrupt to stop marquee
+    if (Serial.available()) {
+      Serial.println(F("Stopped"));
+      while(Serial.available()) Serial.read(); // Clear buffer
+      return;
+    }
+  }
+
+  Serial.println(F("Done"));
+}
+
+// Line graph plotting
+// Format: #GRAPH <x> <y> <w> <h> <val1,val2,val3,...>
+void parseGraph(String p) {
+  int v[4], i = 0, last = -1;
+
+  // Parse x, y, w, h
+  for (int j = 0; j <= p.length() && i < 4; j++) {
+    if (j == p.length() || p[j] == ' ') {
+      v[i++] = p.substring(last + 1, j).toInt();
+      last = j;
+    }
+  }
+
+  if (i != 4) return;
+
+  int x = v[0], y = v[1], w = v[2], h = v[3];
+  String dataStr = p.substring(last + 1);
+
+  // Parse comma-separated values
+  graphPointCount = 0;
+  int lastComma = -1;
+  for (int j = 0; j <= dataStr.length() && graphPointCount < MAX_GRAPH_POINTS; j++) {
+    if (j == dataStr.length() || dataStr[j] == ',') {
+      if (j > lastComma + 1) {
+        graphData[graphPointCount++] = dataStr.substring(lastComma + 1, j).toInt();
+      }
+      lastComma = j;
+    }
+  }
+
+  if (graphPointCount < 2) {
+    Serial.println(F("?Graph needs 2+ points"));
+    return;
+  }
+
+  // Draw graph border
+  tft.drawRect(x, y, w, h, textColor);
+
+  // Find min/max for scaling
+  int16_t minVal = graphData[0], maxVal = graphData[0];
+  for (int i = 1; i < graphPointCount; i++) {
+    if (graphData[i] < minVal) minVal = graphData[i];
+    if (graphData[i] > maxVal) maxVal = graphData[i];
+  }
+
+  // Prevent division by zero
+  if (maxVal == minVal) maxVal = minVal + 1;
+
+  // Plot lines between points
+  float xStep = (float)(w - 4) / (graphPointCount - 1);
+  for (int i = 0; i < graphPointCount - 1; i++) {
+    int x1 = x + 2 + (int)(i * xStep);
+    int x2 = x + 2 + (int)((i + 1) * xStep);
+
+    int y1 = y + h - 2 - (int)((graphData[i] - minVal) * (h - 4) / (maxVal - minVal));
+    int y2 = y + h - 2 - (int)((graphData[i + 1] - minVal) * (h - 4) / (maxVal - minVal));
+
+    tft.drawLine(x1, y1, x2, y2, fillColor);
+  }
+
+  Serial.print(F("Graph:"));
+  Serial.print(graphPointCount);
+  Serial.println(F("pts"));
+}
+
+// Bar graph
+// Format: #BAR <x> <y> <w> <h> <val1,val2,val3,...>
+void parseBarGraph(String p) {
+  int v[4], i = 0, last = -1;
+
+  // Parse x, y, w, h
+  for (int j = 0; j <= p.length() && i < 4; j++) {
+    if (j == p.length() || p[j] == ' ') {
+      v[i++] = p.substring(last + 1, j).toInt();
+      last = j;
+    }
+  }
+
+  if (i != 4) return;
+
+  int x = v[0], y = v[1], w = v[2], h = v[3];
+  String dataStr = p.substring(last + 1);
+
+  // Parse comma-separated values
+  int barCount = 0;
+  int16_t barData[20]; // Max 20 bars
+  int lastComma = -1;
+  for (int j = 0; j <= dataStr.length() && barCount < 20; j++) {
+    if (j == dataStr.length() || dataStr[j] == ',') {
+      if (j > lastComma + 1) {
+        barData[barCount++] = dataStr.substring(lastComma + 1, j).toInt();
+      }
+      lastComma = j;
+    }
+  }
+
+  if (barCount < 1) {
+    Serial.println(F("?Bar needs 1+ values"));
+    return;
+  }
+
+  // Draw border
+  tft.drawRect(x, y, w, h, textColor);
+
+  // Find max for scaling
+  int16_t maxVal = barData[0];
+  for (int i = 1; i < barCount; i++) {
+    if (barData[i] > maxVal) maxVal = barData[i];
+  }
+
+  if (maxVal == 0) maxVal = 1;
+
+  // Draw bars
+  int barWidth = (w - 2) / barCount;
+  for (int i = 0; i < barCount; i++) {
+    int barH = (barData[i] * (h - 2)) / maxVal;
+    int barX = x + 1 + i * barWidth;
+    int barY = y + h - 1 - barH;
+
+    tft.fillRect(barX, barY, barWidth - 1, barH, fillColor);
+  }
+
+  Serial.print(F("BarGraph:"));
+  Serial.print(barCount);
+  Serial.println(F("bars"));
+}
+
+// Simple monochrome bitmap display
+// Format: #BITMAP <x> <y> <w> <h> <hexdata>
+// hexdata is hex string like "FF00FF00" (1 bit per pixel, MSB first)
+void parseBitmap(String p) {
+  int v[4], i = 0, last = -1;
+
+  // Parse x, y, w, h
+  for (int j = 0; j <= p.length() && i < 4; j++) {
+    if (j == p.length() || p[j] == ' ') {
+      v[i++] = p.substring(last + 1, j).toInt();
+      last = j;
+    }
+  }
+
+  if (i != 4) return;
+
+  int x = v[0], y = v[1], w = v[2], h = v[3];
+  String hexData = p.substring(last + 1);
+  hexData.trim();
+  hexData.toUpperCase();
+
+  int bytesNeeded = ((w * h) + 7) / 8;
+
+  // Draw bitmap
+  int bitIndex = 0;
+  for (int py = 0; py < h; py++) {
+    for (int px = 0; px < w; px++) {
+      int bytePos = bitIndex / 8;
+      int bitPos = 7 - (bitIndex % 8);
+
+      if (bytePos * 2 + 1 < hexData.length()) {
+        // Parse hex byte
+        char hexByte[3] = {hexData[bytePos * 2], hexData[bytePos * 2 + 1], 0};
+        uint8_t byte = strtol(hexByte, NULL, 16);
+
+        // Check bit
+        if (byte & (1 << bitPos)) {
+          tft.drawPixel(x + px, y + py, textColor);
+        } else if (opaqueText) {
+          tft.drawPixel(x + px, y + py, bgColor);
+        }
+      }
+
+      bitIndex++;
+    }
+  }
+
+  Serial.println(F("Bitmap"));
+}
+
+// Text box with border
+// Format: #TEXTBOX <x> <y> <w> <h> <text>
+void parseTextBox(String p) {
+  int v[4], i = 0, last = -1;
+
+  // Parse x, y, w, h
+  for (int j = 0; j <= p.length() && i < 4; j++) {
+    if (j == p.length() || p[j] == ' ') {
+      v[i++] = p.substring(last + 1, j).toInt();
+      last = j;
+    }
+  }
+
+  if (i != 4) return;
+
+  int x = v[0], y = v[1], w = v[2], h = v[3];
+  String text = p.substring(last + 1);
+
+  // Draw box
+  tft.drawRect(x, y, w, h, textColor);
+
+  // Draw text inside, centered
+  uint16_t textW = text.length() * BASE_CHAR_W * textSize;
+  uint16_t textH = BASE_CHAR_H * textSize;
+  int textX = x + (w - textW) / 2;
+  int textY = y + (h - textH) / 2;
+
+  if (textX < x + 2) textX = x + 2;
+  if (textY < y + 2) textY = y + 2;
+
+  tft.setCursor(textX, textY);
+  tft.print(text);
+
+  Serial.println(F("TextBox"));
+}
+
+// Draw grid
+// Format: #GRID <x> <y> <w> <h> <spacing>
+void parseGrid(String p) {
+  int v[5], i = 0, last = -1;
+  for (int j = 0; j <= p.length() && i < 5; j++) {
+    if (j == p.length() || p[j] == ' ') {
+      v[i++] = p.substring(last + 1, j).toInt();
+      last = j;
+    }
+  }
+  if (i == 5) {
+    int x = v[0], y = v[1], w = v[2], h = v[3], spacing = v[4];
+
+    // Draw vertical lines
+    for (int gx = x; gx <= x + w; gx += spacing) {
+      tft.drawFastVLine(gx, y, h, textColor);
+    }
+
+    // Draw horizontal lines
+    for (int gy = y; gy <= y + h; gy += spacing) {
+      tft.drawFastHLine(x, gy, w, textColor);
+    }
+
+    Serial.println(F("Grid"));
+  }
+}
+
 // Help - comprehensive
 void help() {
   Serial.println(F("=== ARDUINO MEGA + ILI9486 COMMANDS ==="));
+  Serial.println(F("Enhanced Edition v2.1"));
   Serial.println();
   Serial.println(F("TEXT COMMANDS:"));
   Serial.println(F("  <text>          - Display text"));
   Serial.println(F("  #SIZE <1-10>    - Set text size"));
   Serial.println(F("  #POS <x> <y>    - Set cursor position"));
+  Serial.println(F("  #ALIGN <LEFT|CENTER|RIGHT> - Text align"));
   Serial.println();
   Serial.println(F("COLOR COMMANDS:"));
   Serial.println(F("  #COLOR <name>   - Set text/draw color"));
@@ -791,10 +1164,19 @@ void help() {
   Serial.println(F("  #VLINE <x y len>     - Vertical line"));
   Serial.println(F("  #PIXEL <x y>         - Draw pixel"));
   Serial.println(F("  #PROG <x y w h %>    - Progress bar"));
+  Serial.println(F("  #GRID <x y w h spacing> - Draw grid"));
+  Serial.println();
+  Serial.println(F("ADVANCED FEATURES:"));
+  Serial.println(F("  #MARQUEE <y speed text> - Scroll text"));
+  Serial.println(F("  #GRAPH <x y w h val,val,...> - Line graph"));
+  Serial.println(F("  #BAR <x y w h val,val,...> - Bar chart"));
+  Serial.println(F("  #BITMAP <x y w h hex> - Monochrome bitmap"));
+  Serial.println(F("  #TEXTBOX <x y w h text> - Bordered text"));
   Serial.println();
   Serial.println(F("SCREEN COMMANDS:"));
   Serial.println(F("  #CLEAR / #CLR   - Clear screen"));
   Serial.println(F("  #ROT <0-3>      - Set rotation"));
+  Serial.println(F("  #INVERT <ON|OFF> - Invert display"));
   Serial.println(F("  #RESET          - Reset all settings"));
   Serial.println();
   Serial.println(F("SETTINGS:"));
