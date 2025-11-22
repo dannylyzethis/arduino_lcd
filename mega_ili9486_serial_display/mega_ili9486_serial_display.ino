@@ -1370,6 +1370,9 @@ void drawFrame(uint8_t id, int x, int y) {
   uint8_t h = frames[id].height;
   uint8_t* data = frames[id].data;
 
+  // Safety check for NULL pointer
+  if (data == NULL) return;
+
   // Draw bitmap
   int bitIndex = 0;
   for (int py = 0; py < h; py++) {
@@ -1446,6 +1449,9 @@ void parseFrameDef(String p) {
     Serial.println(F("?Out of memory"));
     return;
   }
+
+  // Initialize to zero to prevent garbage data
+  memset(frameData, 0, bytesNeeded);
 
   // Parse hex data into frame buffer
   for (uint16_t i = 0; i < bytesNeeded && i * 2 + 1 < hexData.length(); i++) {
