@@ -129,6 +129,8 @@ void setup() {
   cmd.reserve(100);
   fpgaBuffer.reserve(80);
   initButtons();
+
+  Serial.println(F("READY"));
 }
 
 void loop() {
