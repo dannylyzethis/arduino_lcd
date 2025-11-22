@@ -35,22 +35,9 @@ uint16_t bottomMinY;
 uint16_t bottomMaxY;
 uint16_t topPosX = 0;
 uint16_t topPosY = 0;
-uint16_t topTextColor = 0xFFFF;
-uint16_t topBgColor = 0x0000;
 bool topOpaqueText = false;
-uint8_t topTextSize = 2;
 uint16_t bottomPosX = 0;
 uint16_t bottomPosY = 0;
-uint16_t bottomTextColor = 0x07E0;
-uint16_t bottomBgColor = 0x0000;
-bool bottomOpaqueText = false;
-uint8_t bottomTextSize = 1;
-uint16_t textColor = 0xFFFF;
-uint16_t bgColor = 0x0000;
-bool opaqueText = false;
-uint8_t textSize = 2;
-uint16_t posX = 0;
-uint16_t posY = 0;
 
 String cmd = "";
 bool cmdReady = false;
@@ -193,33 +180,34 @@ void drawDivider() {
 uint8_t getLines(const String& txt) {
   uint8_t len = txt.length();
   if (len == 0) return 1;
-  uint8_t charsPerLine = screenW / (BASE_CHAR_W * topTextSize);
+  uint8_t charsPerLine = screenW / (BASE_CHAR_W * registers[REG_TOP_SIZE]);
   return (len + charsPerLine - 1) / charsPerLine;
 }
 uint8_t getLinesBottom(const String& txt) {
   uint8_t len = txt.length();
   if (len == 0) return 1;
-  uint8_t charsPerLine = screenW / (BASE_CHAR_W * bottomTextSize);
+  uint8_t charsPerLine = screenW / (BASE_CHAR_W * registers[REG_BOT_SIZE]);
   return (len + charsPerLine - 1) / charsPerLine;
 }
 void showText(const String& txt) {
+  uint8_t ts = registers[REG_TOP_SIZE];
   uint8_t lines = getLines(txt);
-  uint16_t lineH = BASE_CHAR_H * topTextSize;
+  uint16_t lineH = BASE_CHAR_H * ts;
   uint16_t needH = lines * lineH;
 
   if (topPosY + needH > topMaxY) {
     tft.fillRect(0, 0, screenW, topMaxY, 0x0000);
     topPosY = 0;
   }
-  tft.setTextSize(topTextSize);
+  tft.setTextSize(ts);
   if (topOpaqueText) {
-    tft.setTextColor(topTextColor, topBgColor);
+    tft.setTextColor(registers[REG_TOP_COLOR], registers[REG_TOP_BGCOLOR]);
   } else {
-    tft.setTextColor(topTextColor);
+    tft.setTextColor(registers[REG_TOP_COLOR]);
   }
   tft.setCursor(topPosX, topPosY);
 
-  uint8_t charsPerLine = screenW / (BASE_CHAR_W * topTextSize);
+  uint8_t charsPerLine = screenW / (BASE_CHAR_W * ts);
   if (txt.length() > charsPerLine) {
     int start = 0;
     while (start < txt.length()) {
@@ -240,34 +228,26 @@ void showText(const String& txt) {
   topPosY = tft.getCursorY();
   if (topPosY >= topMaxY) topPosY = 0;
   topPosX = 0;
-
-  posY = topPosY;
-  posX = topPosX;
-  textSize = topTextSize;
-  textColor = topTextColor;
 }
 
 void showTextTop(const String& txt) {
   showText(txt);
 }
 void showTextBottom(const String& txt) {
+  uint8_t bs = registers[REG_BOT_SIZE];
   uint8_t lines = getLinesBottom(txt);
-  uint16_t lineH = BASE_CHAR_H * bottomTextSize;
+  uint16_t lineH = BASE_CHAR_H * bs;
   uint16_t needH = lines * lineH;
 
   if (bottomPosY + needH > bottomMaxY) {
     tft.fillRect(0, bottomMinY, screenW, bottomMaxY - bottomMinY, 0x0000);
     bottomPosY = bottomMinY;
   }
-  tft.setTextSize(bottomTextSize);
-  if (bottomOpaqueText) {
-    tft.setTextColor(bottomTextColor, bottomBgColor);
-  } else {
-    tft.setTextColor(bottomTextColor);
-  }
+  tft.setTextSize(bs);
+  tft.setTextColor(registers[REG_BOT_COLOR]);
   tft.setCursor(bottomPosX, bottomPosY);
 
-  uint8_t charsPerLine = screenW / (BASE_CHAR_W * bottomTextSize);
+  uint8_t charsPerLine = screenW / (BASE_CHAR_W * bs);
   if (txt.length() > charsPerLine) {
     int start = 0;
     while (start < txt.length()) {
@@ -305,7 +285,6 @@ void processCmd(String c) {
     if (c == "#CLEAR" || c == "#CLR") {
       tft.fillRect(0, 0, screenW, topMaxY, 0x0000);
       topPosX = topPosY = 0;
-      posX = posY = 0;
       drawDivider();
 
     } else if (c.startsWith("#POS ")) {
@@ -313,8 +292,6 @@ void processCmd(String c) {
       if (sp > 0) {
         topPosX = c.substring(5, sp).toInt();
         topPosY = c.substring(sp + 1).toInt();
-        posX = topPosX;
-        posY = topPosY;
         tft.setCursor(topPosX, topPosY);
       }
 
@@ -344,7 +321,6 @@ void processCmd(String c) {
       topPosX = topPosY = 0;
       bottomPosX = 0;
       bottomPosY = bottomMinY;
-      posX = posY = 0;
       drawDivider();
 
     } else if (c.startsWith("#FPGASEND ")) {
@@ -451,21 +427,8 @@ void writeRegister(uint8_t addr, uint32_t value) {
   if (addr == REG_FPGA_BAUD) {
     fpgaSerial.end();
     fpgaSerial.begin(value);
-  } else if (addr == REG_TOP_COLOR) {
-    topTextColor = value & 0xFFFF;
-    textColor = topTextColor;
   } else if (addr == REG_TOP_BGCOLOR) {
-    topBgColor = value & 0xFFFF;
-    bgColor = topBgColor;
     topOpaqueText = true;
-    opaqueText = true;
-  } else if (addr == REG_TOP_SIZE) {
-    topTextSize = value & 0xFF;
-    textSize = topTextSize;
-  } else if (addr == REG_BOT_COLOR) {
-    bottomTextColor = value & 0xFFFF;
-  } else if (addr == REG_BOT_SIZE) {
-    bottomTextSize = value & 0xFF;
   } else if (addr == REG_ROTATION) {
     uint8_t rot = value & 0x03;
     tft.setRotation(rot);
@@ -479,7 +442,6 @@ void writeRegister(uint8_t addr, uint32_t value) {
     topPosX = topPosY = 0;
     bottomPosX = 0;
     bottomPosY = bottomMinY;
-    posX = posY = 0;
     drawDivider();
     initButtons();
     if (buttonsVisible) {
@@ -502,7 +464,7 @@ void parseRect(String p) {
       last = j;
     }
   }
-  if (i == 4) tft.drawRect(v[0], v[1], v[2], v[3], textColor);
+  if (i == 4) tft.drawRect(v[0], v[1], v[2], v[3], registers[REG_TOP_COLOR]);
 }
 
 void parseFill(String p) {
@@ -513,7 +475,7 @@ void parseFill(String p) {
       last = j;
     }
   }
-  if (i == 4) tft.fillRect(v[0], v[1], v[2], v[3], textColor);
+  if (i == 4) tft.fillRect(v[0], v[1], v[2], v[3], registers[REG_TOP_COLOR]);
 }
 
 void parseCirc(String p) {
@@ -524,7 +486,7 @@ void parseCirc(String p) {
       last = j;
     }
   }
-  if (i == 3) tft.drawCircle(v[0], v[1], v[2], textColor);
+  if (i == 3) tft.drawCircle(v[0], v[1], v[2], registers[REG_TOP_COLOR]);
 }
 
 void parseLine(String p) {
@@ -535,7 +497,7 @@ void parseLine(String p) {
       last = j;
     }
   }
-  if (i == 4) tft.drawLine(v[0], v[1], v[2], v[3], textColor);
+  if (i == 4) tft.drawLine(v[0], v[1], v[2], v[3], registers[REG_TOP_COLOR]);
 }
 
 void parseProg(String p) {
@@ -549,9 +511,9 @@ void parseProg(String p) {
   if (i == 5) {
     int pct = constrain(v[4], 0, 100);
     int fw = (v[2] * pct) / 100;
-    tft.drawRect(v[0], v[1], v[2], v[3], textColor);
+    tft.drawRect(v[0], v[1], v[2], v[3], registers[REG_TOP_COLOR]);
     if (fw > 2) {
-      tft.fillRect(v[0]+1, v[1]+1, fw-2, v[3]-2, textColor);
+      tft.fillRect(v[0]+1, v[1]+1, fw-2, v[3]-2, registers[REG_TOP_COLOR]);
     }
   }
 }
