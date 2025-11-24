@@ -10,11 +10,12 @@
 
 // LCD Pin definitions for Mega 2560 with shield
 // Most TFT shields use these pins
-#define LCD_CS A3
-#define LCD_CD A2
-#define LCD_WR A1
-#define LCD_RD A0
-#define LCD_RESET A4
+// Using explicit pin numbers for Mega 2560
+#define LCD_CS 57    // A3
+#define LCD_CD 56    // A2
+#define LCD_WR 55    // A1
+#define LCD_RD 54    // A0
+#define LCD_RESET 58 // A4
 
 // Create TFT instance
 Adafruit_TFTLCD tft(LCD_CS, LCD_CD, LCD_WR, LCD_RD, LCD_RESET);
