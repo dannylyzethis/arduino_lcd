@@ -10,7 +10,17 @@
  * - Serial2: FPGA2 (TX2=16, RX2=17)
  * - Serial3: FPGA3 (TX3=14, RX3=15)
  *
- * Touch Buttons: 4 buttons (UP/DOWN/LEFT/RIGHT) at bottom
+ * Touch Buttons: 4 buttons send byte arrays to FPGA
+ * - UP:    0x55 0x50 ("UP")
+ * - DOWN:  0x44 0x4E ("DN")
+ * - LEFT:  0x4C 0x54 ("LT")
+ * - RIGHT: 0x52 0x54 ("RT")
+ * Customize in initButtons() function (search for "Initialize button layout")
+ *
+ * Termination Control:
+ * - >>> prefix supports configurable termination (NONE/LF/CR/CRLF)
+ * - Use #TERM command to set: #TERM LF, #TERM CRLF, etc.
+ * - Default: LF (\n)
  */
 
 #include <Adafruit_GFX.h>
@@ -74,11 +84,22 @@ unsigned long fpga1Baud = 9600;
 unsigned long fpga2Baud = 9600;
 unsigned long fpga3Baud = 9600;
 
+// Termination character modes
+enum TermMode {
+  TERM_NONE,   // No termination
+  TERM_LF,     // \n (0x0A)
+  TERM_CR,     // \r (0x0D)
+  TERM_CRLF    // \r\n (0x0D 0x0A)
+};
+
+TermMode bypassTerm = TERM_LF;  // Default for >>> prefix
+
 // Button structure for touch interface
 struct Button {
   uint16_t x, y, w, h;
   const char* label;
-  const char* cmd;
+  uint8_t cmdBytes[8];    // Bytes to send to FPGA
+  uint8_t cmdLen;         // Number of bytes in command
   uint16_t color;
 };
 
@@ -321,12 +342,32 @@ void processCmd(String c) {
   c.trim();
   if (c.length() == 0) return;
 
-  // FPGA passthrough
+  // FPGA passthrough with termination control
   if (c.startsWith(">>>")) {
     String data = c.substring(3);
     data.trim();
     HardwareSerial& fpga = getFPGA();
-    fpga.println(data);
+
+    // Send data
+    fpga.print(data);
+
+    // Apply termination based on mode
+    switch (bypassTerm) {
+      case TERM_LF:
+        fpga.write(0x0A);  // \n
+        break;
+      case TERM_CR:
+        fpga.write(0x0D);  // \r
+        break;
+      case TERM_CRLF:
+        fpga.write(0x0D);  // \r
+        fpga.write(0x0A);  // \n
+        break;
+      case TERM_NONE:
+        // No termination
+        break;
+    }
+
     Serial.print(F("OK:TX_S"));
     Serial.println(activeFpga);
     return;
@@ -491,6 +532,25 @@ void processCmd(String c) {
 
     } else if (c == "#ID") {
       Serial.println(F("COM LCD MEGA ILI9486 SPLIT TEXT"));
+
+    } else if (c.startsWith("#TERM ")) {
+      String mode = c.substring(6);
+      mode.trim();
+      if (mode == "NONE") {
+        bypassTerm = TERM_NONE;
+        Serial.println(F("OK:TERM_NONE"));
+      } else if (mode == "LF" || mode == "\\N") {
+        bypassTerm = TERM_LF;
+        Serial.println(F("OK:TERM_LF"));
+      } else if (mode == "CR" || mode == "\\R") {
+        bypassTerm = TERM_CR;
+        Serial.println(F("OK:TERM_CR"));
+      } else if (mode == "CRLF" || mode == "\\R\\N") {
+        bypassTerm = TERM_CRLF;
+        Serial.println(F("OK:TERM_CRLF"));
+      } else {
+        Serial.println(F("ERR:USE_NONE_LF_CR_CRLF"));
+      }
 
     } else if (c == "#SHOWBTNS") {
       showButtons();
@@ -702,6 +762,8 @@ void help() {
   Serial.println(F("  #FPGASEND <text>"));
   Serial.println(F("  #FPGAPING"));
   Serial.println(F("  #FPGABYTES <hex>"));
+  Serial.println(F("  #TERM <NONE|LF|CR|CRLF>"));
+  Serial.println(F("    (Sets >>> termination)"));
   Serial.println();
   Serial.println(F("DRAWING:"));
   Serial.println(F("  #RECT <x y w h>"));
@@ -713,7 +775,9 @@ void help() {
   Serial.println(F("TOUCH BUTTONS:"));
   Serial.println(F("  #SHOWBTNS - Show touch buttons"));
   Serial.println(F("  #HIDEBTNS - Hide touch buttons"));
-  Serial.println(F("  (4 buttons: UP/DOWN/LEFT/RIGHT)"));
+  Serial.println(F("  Buttons send byte arrays:"));
+  Serial.println(F("    UP=0x55 0x50, DN=0x44 0x4E"));
+  Serial.println(F("    LT=0x4C 0x54, RT=0x52 0x54"));
   Serial.println();
   Serial.println(F("OTHER:"));
   Serial.println(F("  #CLRALL - Clear both screens"));
@@ -738,40 +802,48 @@ void initButtons() {
   uint16_t btnY = bottomMaxY - btnHeight - 2;
   buttonTextY = btnY - 2;  // Text area ends just above buttons
 
-  // UP button
+  // UP button - sends bytes: 0x55 0x50 ("UP")
   buttons[0].x = 5;
   buttons[0].y = btnY;
   buttons[0].w = btnWidth;
   buttons[0].h = btnHeight;
   buttons[0].label = "UP";
-  buttons[0].cmd = "UP";
+  buttons[0].cmdBytes[0] = 0x55;  // 'U'
+  buttons[0].cmdBytes[1] = 0x50;  // 'P'
+  buttons[0].cmdLen = 2;
   buttons[0].color = 0x07E0;  // Green
 
-  // DOWN button
+  // DOWN button - sends bytes: 0x44 0x4E ("DN")
   buttons[1].x = 5 + btnWidth + 3;
   buttons[1].y = btnY;
   buttons[1].w = btnWidth;
   buttons[1].h = btnHeight;
   buttons[1].label = "DN";
-  buttons[1].cmd = "DOWN";
+  buttons[1].cmdBytes[0] = 0x44;  // 'D'
+  buttons[1].cmdBytes[1] = 0x4E;  // 'N'
+  buttons[1].cmdLen = 2;
   buttons[1].color = 0x07E0;  // Green
 
-  // LEFT button
+  // LEFT button - sends bytes: 0x4C 0x54 ("LT")
   buttons[2].x = 5 + (btnWidth + 3) * 2;
   buttons[2].y = btnY;
   buttons[2].w = btnWidth;
   buttons[2].h = btnHeight;
   buttons[2].label = "LT";
-  buttons[2].cmd = "LEFT";
+  buttons[2].cmdBytes[0] = 0x4C;  // 'L'
+  buttons[2].cmdBytes[1] = 0x54;  // 'T'
+  buttons[2].cmdLen = 2;
   buttons[2].color = 0x07E0;  // Green
 
-  // RIGHT button
+  // RIGHT button - sends bytes: 0x52 0x54 ("RT")
   buttons[3].x = 5 + (btnWidth + 3) * 3;
   buttons[3].y = btnY;
   buttons[3].w = btnWidth;
   buttons[3].h = btnHeight;
   buttons[3].label = "RT";
-  buttons[3].cmd = "RIGHT";
+  buttons[3].cmdBytes[0] = 0x52;  // 'R'
+  buttons[3].cmdBytes[1] = 0x54;  // 'T'
+  buttons[3].cmdLen = 2;
   buttons[3].color = 0x07E0;  // Green
 }
 
@@ -868,15 +940,25 @@ void checkTouch() {
       delay(50);
       drawButton(i);
 
-      // Send command to selected FPGA
+      // Send byte array to selected FPGA
       HardwareSerial& fpga = getFPGA();
-      fpga.println(btn.cmd);
+      for (uint8_t j = 0; j < btn.cmdLen; j++) {
+        fpga.write(btn.cmdBytes[j]);
+      }
 
-      // Log to serial
+      // Log to serial (show bytes in hex)
       Serial.print(F("[BTN>FPGA"));
       Serial.print(activeFpga);
       Serial.print(F("] "));
-      Serial.println(btn.cmd);
+      Serial.print(btn.label);
+      Serial.print(F(" = "));
+      for (uint8_t j = 0; j < btn.cmdLen; j++) {
+        if (j > 0) Serial.print(F(" "));
+        Serial.print(F("0x"));
+        if (btn.cmdBytes[j] < 16) Serial.print(F("0"));
+        Serial.print(btn.cmdBytes[j], HEX);
+      }
+      Serial.println();
 
       // Show on bottom screen
       String msg = String("BTN: ") + btn.label;
