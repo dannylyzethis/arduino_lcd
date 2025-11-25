@@ -26,7 +26,17 @@
  * - RIGHT: 0x52 0x54 ("RT")
  * - Shows TX bytes on LCD bottom screen: "TX: 0x55 0x50"
  * - Works correctly in all screen rotations (0-3)
+ * - Button positions automatically recalculate on rotation change
  * Customize in initButtons() function (search for "Initialize button layout")
+ *
+ * Touch Calibration:
+ * - Adjustable calibration values for accurate touch detection
+ * - Default: MINX=120, MAXX=900, MINY=70, MAXY=920
+ * Commands:
+ *   #TOUCHCAL ?                     - Show current calibration
+ *   #TOUCHCAL 120 900 70 920        - Set calibration values
+ *   #TOUCHTEST                      - Toggle test mode (shows raw & mapped coordinates)
+ * Use #TOUCHTEST to find corner values, then set with #TOUCHCAL
  *
  * Termination Control (applies to ALL serial transmissions):
  * - Configurable termination: NONE, LF (\n), CR (\r), CRLF (\r\n), or CUSTOM byte
@@ -65,15 +75,19 @@ MCUFRIEND_kbv tft;
 #define XP 8   // X+ is on Digital8
 
 // Touchscreen calibration (adjust these for your specific screen)
-#define TS_MINX 120
-#define TS_MAXX 900
-#define TS_MINY 70
-#define TS_MAXY 920
+// Now adjustable via #TOUCHCAL command
+int16_t TS_MINX = 120;
+int16_t TS_MAXX = 900;
+int16_t TS_MINY = 70;
+int16_t TS_MAXY = 920;
 
 #define MINPRESSURE 10
 #define MAXPRESSURE 1000
 
 TouchScreen ts = TouchScreen(XP, YP, XM, YM, 300);
+
+// Touch test mode
+bool touchTestMode = false;
 
 #define BASE_CHAR_W 6
 #define BASE_CHAR_H 8
@@ -757,6 +771,15 @@ void processCmd(String c) {
         bottomPosX = 0;
         bottomPosY = bottomMinY;
         drawDivider();
+
+        // Recalculate button positions and redraw if visible
+        if (buttonsVisible) {
+          initButtons();  // Recalculate button positions for new rotation
+          for (uint8_t i = 0; i < NUM_BUTTONS; i++) {
+            drawButton(i);
+          }
+        }
+
         Serial.print(F("OK:ROT_"));
         Serial.println(r);
       }
@@ -1285,6 +1308,60 @@ void processCmd(String c) {
       hideButtons();
       Serial.println(F("OK:HIDEBTNS"));
 
+    } else if (c.startsWith("#TOUCHCAL")) {
+      String param = c.substring(9);
+      param.trim();
+      if (param == "?") {
+        // Query current calibration
+        Serial.print(F("TOUCHCAL: MINX="));
+        Serial.print(TS_MINX);
+        Serial.print(F(" MAXX="));
+        Serial.print(TS_MAXX);
+        Serial.print(F(" MINY="));
+        Serial.print(TS_MINY);
+        Serial.print(F(" MAXY="));
+        Serial.println(TS_MAXY);
+      } else {
+        // Parse calibration values: #TOUCHCAL <minx> <maxx> <miny> <maxy>
+        int vals[4];
+        int count = 0;
+        int lastIdx = 0;
+        for (int i = 0; i <= param.length() && count < 4; i++) {
+          if (i == param.length() || param[i] == ' ') {
+            if (i > lastIdx) {
+              vals[count++] = param.substring(lastIdx, i).toInt();
+            }
+            lastIdx = i + 1;
+          }
+        }
+
+        if (count == 4) {
+          TS_MINX = vals[0];
+          TS_MAXX = vals[1];
+          TS_MINY = vals[2];
+          TS_MAXY = vals[3];
+          Serial.print(F("OK:TOUCHCAL "));
+          Serial.print(TS_MINX);
+          Serial.print(F(" "));
+          Serial.print(TS_MAXX);
+          Serial.print(F(" "));
+          Serial.print(TS_MINY);
+          Serial.print(F(" "));
+          Serial.println(TS_MAXY);
+        } else {
+          Serial.println(F("ERR:USE_MINX_MAXX_MINY_MAXY"));
+        }
+      }
+
+    } else if (c == "#TOUCHTEST") {
+      touchTestMode = !touchTestMode;
+      Serial.print(F("OK:TOUCHTEST_"));
+      Serial.println(touchTestMode ? F("ON") : F("OFF"));
+      if (touchTestMode) {
+        Serial.println(F("Touch screen to see raw coordinates"));
+        Serial.println(F("Use #TOUCHTEST again to disable"));
+      }
+
     } else if (c.startsWith("#GPIOMODE ")) {
       // #GPIOMODE <pin> <IN|INPU|OUT>
       int sp = c.indexOf(' ', 10);
@@ -1573,6 +1650,12 @@ void help() {
   Serial.println(F("    UP=0x55 0x50, DN=0x44 0x4E"));
   Serial.println(F("    LT=0x4C 0x54, RT=0x52 0x54"));
   Serial.println();
+  Serial.println(F("TOUCH CALIBRATION:"));
+  Serial.println(F("  #TOUCHCAL ? - Show current calibration"));
+  Serial.println(F("  #TOUCHCAL <minx> <maxx> <miny> <maxy>"));
+  Serial.println(F("  #TOUCHTEST - Toggle touch test mode"));
+  Serial.println(F("    Shows raw & mapped coordinates"));
+  Serial.println();
   Serial.println(F("GPIO (Pins 22-29):"));
   Serial.println(F("  #GPIOMODE <pin> <IN|INPU|OUT>"));
   Serial.println(F("  #GPIOWRITE <pin> <0|1>"));
@@ -1723,6 +1806,51 @@ void checkTouch() {
 
   // Check if touched
   if (p.z < MINPRESSURE || p.z > MAXPRESSURE) return;
+
+  // Touch test mode - show raw coordinates
+  if (touchTestMode) {
+    lastTouch = now;
+    Serial.print(F("[TOUCH] Raw: X="));
+    Serial.print(p.x);
+    Serial.print(F(" Y="));
+    Serial.print(p.y);
+    Serial.print(F(" Z="));
+    Serial.print(p.z);
+
+    // Also show mapped coordinates
+    uint8_t rotation = tft.getRotation();
+    int16_t px, py;
+    switch (rotation) {
+      case 0:  // Portrait
+        px = map(p.x, TS_MINX, TS_MAXX, 0, screenW);
+        py = map(p.y, TS_MINY, TS_MAXY, 0, screenH);
+        break;
+      case 1:  // Landscape
+        px = map(p.y, TS_MINY, TS_MAXY, 0, screenW);
+        py = map(p.x, TS_MAXX, TS_MINX, 0, screenH);
+        break;
+      case 2:  // Portrait inverted
+        px = map(p.x, TS_MAXX, TS_MINX, 0, screenW);
+        py = map(p.y, TS_MAXY, TS_MINY, 0, screenH);
+        break;
+      case 3:  // Landscape inverted
+        px = map(p.y, TS_MAXY, TS_MINY, 0, screenW);
+        py = map(p.x, TS_MINX, TS_MAXX, 0, screenH);
+        break;
+      default:
+        px = map(p.x, TS_MINX, TS_MAXX, 0, screenW);
+        py = map(p.y, TS_MINY, TS_MAXY, 0, screenH);
+        break;
+    }
+
+    Serial.print(F(" | Mapped: X="));
+    Serial.print(px);
+    Serial.print(F(" Y="));
+    Serial.print(py);
+    Serial.print(F(" | Rot="));
+    Serial.println(rotation);
+    return;
+  }
 
   // Map touch coordinates to screen coordinates based on rotation
   int16_t px, py;
