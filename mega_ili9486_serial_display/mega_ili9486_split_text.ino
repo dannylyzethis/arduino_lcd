@@ -4,12 +4,15 @@
  * Top=Commands, Bottom=FPGA/Serial Devices
  * Hardware Serial1/2/3 for FPGA (easier than registers!)
  *
- * Serial Ports (with hardware stop bit control):
+ * Serial Ports (with hardware stop bit control and RX modes):
  * - Serial:  USB/PC (115200 baud)
- * - Serial1: FPGA1 (TX1=18, RX1=19) - Default, 1 stop bit
- * - Serial2: FPGA2 (TX2=16, RX2=17) - 1 stop bit
- * - Serial3: FPGA3 (TX3=14, RX3=15) - 1 stop bit
- * Configure: #FPGA1STOP 2 (for 2 stop bits), #FPGA2STOP 1, etc.
+ * - Serial1: FPGA1 (TX1=18, RX1=19) - Default, 1 stop bit, TEXT mode
+ * - Serial2: FPGA2 (TX2=16, RX2=17) - 1 stop bit, TEXT mode
+ * - Serial3: FPGA3 (TX3=14, RX3=15) - 1 stop bit, TEXT mode
+ * Configure:
+ *   #FPGA1STOP 2      - Set 2 hardware stop bits
+ *   #FPGA1RX BINARY   - Receive bytes as hex (for binary protocols)
+ *   #FPGA1RX TEXT     - Receive as text (default)
  *
  * Touch Buttons: 4 buttons send byte arrays to FPGA
  * - UP:    0x55 0x50 ("UP")
@@ -104,6 +107,16 @@ unsigned long fpga3Baud = 9600;
 uint8_t fpga1StopBits = 1;  // 1 or 2 stop bits
 uint8_t fpga2StopBits = 1;
 uint8_t fpga3StopBits = 1;
+
+// FPGA reception modes
+enum FPGARxMode {
+  FPGA_RX_TEXT,    // Parse as text (printable chars, line endings)
+  FPGA_RX_BINARY   // Raw bytes displayed as hex
+};
+
+FPGARxMode fpga1RxMode = FPGA_RX_TEXT;
+FPGARxMode fpga2RxMode = FPGA_RX_TEXT;
+FPGARxMode fpga3RxMode = FPGA_RX_TEXT;
 
 // Termination character modes
 enum TermMode {
@@ -254,22 +267,69 @@ void loop() {
 }
 
 void checkFPGASerial(HardwareSerial& serial, uint8_t id) {
-  while (serial.available()) {
-    char c = serial.read();
-    Serial.write(c);  // Echo to PC
+  // Get RX mode for this serial port
+  FPGARxMode rxMode;
+  switch (id) {
+    case 1: rxMode = fpga1RxMode; break;
+    case 2: rxMode = fpga2RxMode; break;
+    case 3: rxMode = fpga3RxMode; break;
+    default: rxMode = FPGA_RX_TEXT; break;
+  }
 
-    if (c == '\n' || c == '\r') {
-      if (fpgaBuffer.length() > 0) {
-        showTextBottom(fpgaBuffer);
-        fpgaBuffer = "";
-      }
-    } else if (isPrintable(c)) {
-      if (fpgaBuffer.length() < 180) {
-        fpgaBuffer += c;
+  while (serial.available()) {
+    uint8_t byteVal = serial.read();
+
+    if (rxMode == FPGA_RX_BINARY) {
+      // Binary mode: display as hex
+      Serial.print(F("0x"));
+      if (byteVal < 16) Serial.print(F("0"));
+      Serial.print(byteVal, HEX);
+      Serial.print(F(" "));
+
+      // Add to buffer for LCD display
+      if (fpgaBuffer.length() < 160) {
+        if (fpgaBuffer.length() > 0) fpgaBuffer += " ";
+        fpgaBuffer += "0x";
+        if (byteVal < 16) fpgaBuffer += "0";
+        fpgaBuffer += String(byteVal, HEX);
       } else {
+        // Buffer full, display and start new line
         showTextBottom(fpgaBuffer);
         fpgaBuffer = "";
-        fpgaBuffer += c;
+        fpgaBuffer += "0x";
+        if (byteVal < 16) fpgaBuffer += "0";
+        fpgaBuffer += String(byteVal, HEX);
+      }
+
+      // Display every 10 bytes or on pause
+      static uint8_t byteCount = 0;
+      byteCount++;
+      if (byteCount >= 10) {
+        if (fpgaBuffer.length() > 0) {
+          showTextBottom(fpgaBuffer);
+          fpgaBuffer = "";
+        }
+        byteCount = 0;
+      }
+
+    } else {
+      // Text mode: parse as characters
+      char c = (char)byteVal;
+      Serial.write(c);  // Echo to PC
+
+      if (c == '\n' || c == '\r') {
+        if (fpgaBuffer.length() > 0) {
+          showTextBottom(fpgaBuffer);
+          fpgaBuffer = "";
+        }
+      } else if (isPrintable(c)) {
+        if (fpgaBuffer.length() < 180) {
+          fpgaBuffer += c;
+        } else {
+          showTextBottom(fpgaBuffer);
+          fpgaBuffer = "";
+          fpgaBuffer += c;
+        }
       }
     }
   }
@@ -650,6 +710,45 @@ void processCmd(String c) {
         Serial.println(F("ERR:USE_1_OR_2"));
       }
 
+    } else if (c.startsWith("#FPGA1RX ")) {
+      String mode = c.substring(9);
+      mode.trim();
+      if (mode == "TEXT") {
+        fpga1RxMode = FPGA_RX_TEXT;
+        Serial.println(F("OK:FPGA1_RX_TEXT"));
+      } else if (mode == "BINARY" || mode == "BIN") {
+        fpga1RxMode = FPGA_RX_BINARY;
+        Serial.println(F("OK:FPGA1_RX_BINARY"));
+      } else {
+        Serial.println(F("ERR:USE_TEXT_or_BINARY"));
+      }
+
+    } else if (c.startsWith("#FPGA2RX ")) {
+      String mode = c.substring(9);
+      mode.trim();
+      if (mode == "TEXT") {
+        fpga2RxMode = FPGA_RX_TEXT;
+        Serial.println(F("OK:FPGA2_RX_TEXT"));
+      } else if (mode == "BINARY" || mode == "BIN") {
+        fpga2RxMode = FPGA_RX_BINARY;
+        Serial.println(F("OK:FPGA2_RX_BINARY"));
+      } else {
+        Serial.println(F("ERR:USE_TEXT_or_BINARY"));
+      }
+
+    } else if (c.startsWith("#FPGA3RX ")) {
+      String mode = c.substring(9);
+      mode.trim();
+      if (mode == "TEXT") {
+        fpga3RxMode = FPGA_RX_TEXT;
+        Serial.println(F("OK:FPGA3_RX_TEXT"));
+      } else if (mode == "BINARY" || mode == "BIN") {
+        fpga3RxMode = FPGA_RX_BINARY;
+        Serial.println(F("OK:FPGA3_RX_BINARY"));
+      } else {
+        Serial.println(F("ERR:USE_TEXT_or_BINARY"));
+      }
+
     } else if (c.startsWith("#FPGASEND ")) {
       String data = c.substring(10);
       HardwareSerial& fpga = getFPGA();
@@ -982,11 +1081,14 @@ void help() {
   Serial.println(F("  #FPGA1STOP <1|2> - Hardware stop bits"));
   Serial.println(F("  #FPGA2STOP <1|2>"));
   Serial.println(F("  #FPGA3STOP <1|2>"));
+  Serial.println(F("  #FPGA1RX <TEXT|BINARY> - RX mode"));
+  Serial.println(F("  #FPGA2RX <TEXT|BINARY>"));
+  Serial.println(F("  #FPGA3RX <TEXT|BINARY>"));
   Serial.println(F("  #FPGASEND <text>"));
   Serial.println(F("  #FPGAPING"));
   Serial.println(F("  #FPGABYTES <hex>"));
   Serial.println(F("  #TERM <NONE|LF|CR|CRLF|0xFF|255>"));
-  Serial.println(F("    (Data termination byte)"));
+  Serial.println(F("    (TX termination byte)"));
   Serial.println();
   Serial.println(F("DRAWING:"));
   Serial.println(F("  #RECT <x y w h>"));
