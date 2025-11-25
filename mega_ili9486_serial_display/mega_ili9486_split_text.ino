@@ -17,10 +17,12 @@
  * - RIGHT: 0x52 0x54 ("RT")
  * Customize in initButtons() function (search for "Initialize button layout")
  *
- * Termination Control:
- * - >>> prefix supports configurable termination (NONE/LF/CR/CRLF)
+ * Termination Control (applies to ALL serial transmissions):
+ * - Configurable termination: NONE, LF (\n), CR (\r), CRLF (\r\n)
  * - Use #TERM command to set: #TERM LF, #TERM CRLF, etc.
  * - Default: LF (\n)
+ * - Applies to: >>> bypass, touch buttons, #FPGASEND, #FPGABYTES, #FPGAPING
+ * - Ensures proper framing for all FPGA communication
  *
  * GPIO System (Pins 22-29 on side connector):
  * - 8 configurable I/O pins available
@@ -393,6 +395,25 @@ HardwareSerial& getFPGA() {
   }
 }
 
+// Apply termination character to serial stream
+void applyTermination(HardwareSerial& serial) {
+  switch (bypassTerm) {
+    case TERM_LF:
+      serial.write(0x0A);  // \n
+      break;
+    case TERM_CR:
+      serial.write(0x0D);  // \r
+      break;
+    case TERM_CRLF:
+      serial.write(0x0D);  // \r
+      serial.write(0x0A);  // \n
+      break;
+    case TERM_NONE:
+      // No termination
+      break;
+  }
+}
+
 void processCmd(String c) {
   c.trim();
   if (c.length() == 0) return;
@@ -406,22 +427,8 @@ void processCmd(String c) {
     // Send data
     fpga.print(data);
 
-    // Apply termination based on mode
-    switch (bypassTerm) {
-      case TERM_LF:
-        fpga.write(0x0A);  // \n
-        break;
-      case TERM_CR:
-        fpga.write(0x0D);  // \r
-        break;
-      case TERM_CRLF:
-        fpga.write(0x0D);  // \r
-        fpga.write(0x0A);  // \n
-        break;
-      case TERM_NONE:
-        // No termination
-        break;
-    }
+    // Apply termination
+    applyTermination(fpga);
 
     Serial.print(F("OK:TX_S"));
     Serial.println(activeFpga);
@@ -567,12 +574,14 @@ void processCmd(String c) {
     } else if (c.startsWith("#FPGASEND ")) {
       String data = c.substring(10);
       HardwareSerial& fpga = getFPGA();
-      fpga.println(data);
+      fpga.print(data);
+      applyTermination(fpga);
       Serial.println(F("OK:SENT"));
 
     } else if (c == "#FPGAPING") {
       HardwareSerial& fpga = getFPGA();
-      fpga.println(F("PING"));
+      fpga.print(F("PING"));
+      applyTermination(fpga);
       Serial.println(F("OK:PING"));
 
     } else if (c.startsWith("#FPGABYTES ")) {
@@ -760,6 +769,9 @@ int sendHexBytes(String hexStr) {
   for (int i = 0; i < byteCount; i++) {
     fpga.write(buffer[i]);
   }
+
+  // Apply termination after sending all bytes
+  applyTermination(fpga);
 
   return byteCount;
 }
@@ -1056,6 +1068,9 @@ void checkTouch() {
       for (uint8_t j = 0; j < btn.cmdLen; j++) {
         fpga.write(btn.cmdBytes[j]);
       }
+
+      // Apply termination after button bytes
+      applyTermination(fpga);
 
       // Log to serial (show bytes in hex)
       Serial.print(F("[BTN>FPGA"));
