@@ -4,11 +4,12 @@
  * Top=Commands, Bottom=FPGA/Serial Devices
  * Hardware Serial1/2/3 for FPGA (easier than registers!)
  *
- * Serial Ports:
+ * Serial Ports (with hardware stop bit control):
  * - Serial:  USB/PC (115200 baud)
- * - Serial1: FPGA1 (TX1=18, RX1=19) - Default
- * - Serial2: FPGA2 (TX2=16, RX2=17)
- * - Serial3: FPGA3 (TX3=14, RX3=15)
+ * - Serial1: FPGA1 (TX1=18, RX1=19) - Default, 1 stop bit
+ * - Serial2: FPGA2 (TX2=16, RX2=17) - 1 stop bit
+ * - Serial3: FPGA3 (TX3=14, RX3=15) - 1 stop bit
+ * Configure: #FPGA1STOP 2 (for 2 stop bits), #FPGA2STOP 1, etc.
  *
  * Touch Buttons: 4 buttons send byte arrays to FPGA
  * - UP:    0x55 0x50 ("UP")
@@ -18,11 +19,12 @@
  * Customize in initButtons() function (search for "Initialize button layout")
  *
  * Termination Control (applies to ALL serial transmissions):
- * - Configurable termination: NONE, LF (\n), CR (\r), CRLF (\r\n)
- * - Use #TERM command to set: #TERM LF, #TERM CRLF, etc.
+ * - Configurable termination: NONE, LF (\n), CR (\r), CRLF (\r\n), or CUSTOM byte
+ * - Use #TERM command: #TERM LF, #TERM CRLF, #TERM 0xFF, #TERM 255, etc.
  * - Default: LF (\n)
+ * - Custom byte mode for stop bits: #TERM 0xFF or #TERM FF
  * - Applies to: >>> bypass, touch buttons, #FPGASEND, #FPGABYTES, #FPGAPING
- * - Ensures proper framing for all FPGA communication
+ * - Ensures proper framing for all FPGA/embedded communication
  *
  * GPIO System (Pins 22-29 on side connector):
  * - 8 configurable I/O pins available
@@ -99,16 +101,21 @@ uint8_t activeFpga = 1;  // 1, 2, or 3
 unsigned long fpga1Baud = 9600;
 unsigned long fpga2Baud = 9600;
 unsigned long fpga3Baud = 9600;
+uint8_t fpga1StopBits = 1;  // 1 or 2 stop bits
+uint8_t fpga2StopBits = 1;
+uint8_t fpga3StopBits = 1;
 
 // Termination character modes
 enum TermMode {
   TERM_NONE,   // No termination
   TERM_LF,     // \n (0x0A)
   TERM_CR,     // \r (0x0D)
-  TERM_CRLF    // \r\n (0x0D 0x0A)
+  TERM_CRLF,   // \r\n (0x0D 0x0A)
+  TERM_CUSTOM  // Custom byte value
 };
 
 TermMode bypassTerm = TERM_LF;  // Default for >>> prefix
+uint8_t customTermByte = 0xFF;  // Custom termination byte (default 0xFF)
 
 // Button structure for touch interface
 struct Button {
@@ -408,8 +415,50 @@ void applyTermination(HardwareSerial& serial) {
       serial.write(0x0D);  // \r
       serial.write(0x0A);  // \n
       break;
+    case TERM_CUSTOM:
+      serial.write(customTermByte);  // Custom stop byte
+      break;
     case TERM_NONE:
       // No termination
+      break;
+  }
+}
+
+// Set UART hardware stop bits (1 or 2) - ATmega2560 specific
+// Directly manipulates UCSRnC registers
+void setSerialStopBits(uint8_t serialNum, uint8_t stopBits) {
+  if (stopBits != 1 && stopBits != 2) return;
+
+  // USBS bit (bit 3) in UCSRnC register
+  // 0 = 1 stop bit, 1 = 2 stop bits
+  bool twoStopBits = (stopBits == 2);
+
+  switch (serialNum) {
+    case 1:  // Serial1 - UCSR1C
+      if (twoStopBits) {
+        UCSR1C |= (1 << USBS1);   // Set bit 3: 2 stop bits
+      } else {
+        UCSR1C &= ~(1 << USBS1);  // Clear bit 3: 1 stop bit
+      }
+      fpga1StopBits = stopBits;
+      break;
+
+    case 2:  // Serial2 - UCSR2C
+      if (twoStopBits) {
+        UCSR2C |= (1 << USBS2);   // Set bit 3: 2 stop bits
+      } else {
+        UCSR2C &= ~(1 << USBS2);  // Clear bit 3: 1 stop bit
+      }
+      fpga2StopBits = stopBits;
+      break;
+
+    case 3:  // Serial3 - UCSR3C
+      if (twoStopBits) {
+        UCSR3C |= (1 << USBS3);   // Set bit 3: 2 stop bits
+      } else {
+        UCSR3C &= ~(1 << USBS3);  // Clear bit 3: 1 stop bit
+      }
+      fpga3StopBits = stopBits;
       break;
   }
 }
@@ -571,6 +620,36 @@ void processCmd(String c) {
         Serial.println(baud);
       }
 
+    } else if (c.startsWith("#FPGA1STOP ")) {
+      uint8_t stopBits = c.substring(11).toInt();
+      if (stopBits == 1 || stopBits == 2) {
+        setSerialStopBits(1, stopBits);
+        Serial.print(F("OK:FPGA1_STOP_"));
+        Serial.println(stopBits);
+      } else {
+        Serial.println(F("ERR:USE_1_OR_2"));
+      }
+
+    } else if (c.startsWith("#FPGA2STOP ")) {
+      uint8_t stopBits = c.substring(11).toInt();
+      if (stopBits == 1 || stopBits == 2) {
+        setSerialStopBits(2, stopBits);
+        Serial.print(F("OK:FPGA2_STOP_"));
+        Serial.println(stopBits);
+      } else {
+        Serial.println(F("ERR:USE_1_OR_2"));
+      }
+
+    } else if (c.startsWith("#FPGA3STOP ")) {
+      uint8_t stopBits = c.substring(11).toInt();
+      if (stopBits == 1 || stopBits == 2) {
+        setSerialStopBits(3, stopBits);
+        Serial.print(F("OK:FPGA3_STOP_"));
+        Serial.println(stopBits);
+      } else {
+        Serial.println(F("ERR:USE_1_OR_2"));
+      }
+
     } else if (c.startsWith("#FPGASEND ")) {
       String data = c.substring(10);
       HardwareSerial& fpga = getFPGA();
@@ -613,7 +692,34 @@ void processCmd(String c) {
         bypassTerm = TERM_CRLF;
         Serial.println(F("OK:TERM_CRLF"));
       } else {
-        Serial.println(F("ERR:USE_NONE_LF_CR_CRLF"));
+        // Try to parse as custom byte value (hex or decimal)
+        long value = -1;
+        if (mode.startsWith("0X") || mode.startsWith("0x")) {
+          // Hex format: 0xFF or 0XFF
+          value = strtol(mode.c_str() + 2, NULL, 16);
+        } else if (mode.length() <= 2 &&
+                   ((mode[0] >= '0' && mode[0] <= '9') ||
+                    (mode[0] >= 'A' && mode[0] <= 'F') ||
+                    (mode[0] >= 'a' && mode[0] <= 'f'))) {
+          // Try hex without 0x prefix (FF, 0A, etc)
+          value = strtol(mode.c_str(), NULL, 16);
+        } else {
+          // Try decimal (255, 10, etc)
+          value = mode.toInt();
+        }
+
+        if (value >= 0 && value <= 255) {
+          bypassTerm = TERM_CUSTOM;
+          customTermByte = (uint8_t)value;
+          Serial.print(F("OK:TERM_CUSTOM_0x"));
+          if (customTermByte < 16) Serial.print(F("0"));
+          Serial.print(customTermByte, HEX);
+          Serial.print(F(" ("));
+          Serial.print(customTermByte);
+          Serial.println(F(")"));
+        } else {
+          Serial.println(F("ERR:USE_NONE_LF_CR_CRLF_or_BYTE"));
+        }
       }
 
     } else if (c == "#SHOWBTNS") {
@@ -873,11 +979,14 @@ void help() {
   Serial.println(F("  #FPGA1BAUD <baud>"));
   Serial.println(F("  #FPGA2BAUD <baud>"));
   Serial.println(F("  #FPGA3BAUD <baud>"));
+  Serial.println(F("  #FPGA1STOP <1|2> - Hardware stop bits"));
+  Serial.println(F("  #FPGA2STOP <1|2>"));
+  Serial.println(F("  #FPGA3STOP <1|2>"));
   Serial.println(F("  #FPGASEND <text>"));
   Serial.println(F("  #FPGAPING"));
   Serial.println(F("  #FPGABYTES <hex>"));
-  Serial.println(F("  #TERM <NONE|LF|CR|CRLF>"));
-  Serial.println(F("    (Sets >>> termination)"));
+  Serial.println(F("  #TERM <NONE|LF|CR|CRLF|0xFF|255>"));
+  Serial.println(F("    (Data termination byte)"));
   Serial.println();
   Serial.println(F("DRAWING:"));
   Serial.println(F("  #RECT <x y w h>"));
