@@ -1,5 +1,5 @@
 /*
- * ILI9486/9488 Split Screen MEGA - TEXT-BASED EDITION + TOUCH BUTTONS
+ * ILI9486/9488 Split Screen MEGA - TEXT-BASED EDITION + TOUCH BUTTONS + GPIO
  * Arduino Mega 2560 + ILI9486/9488 (320x480)
  * Top=Commands, Bottom=FPGA/Serial Devices
  * Hardware Serial1/2/3 for FPGA (easier than registers!)
@@ -21,6 +21,20 @@
  * - >>> prefix supports configurable termination (NONE/LF/CR/CRLF)
  * - Use #TERM command to set: #TERM LF, #TERM CRLF, etc.
  * - Default: LF (\n)
+ *
+ * GPIO System (Pins 22-29 on side connector):
+ * - 8 configurable I/O pins available
+ * - Modes: INPUT, INPUT_PULLUP, OUTPUT
+ * - Event-driven: RISING, FALLING, or BOTH edge detection
+ * - Register-based control: Set all 8 pins with single byte (0-255)
+ * - Events displayed on LCD bottom screen and logged to serial
+ * Commands:
+ *   #GPIOMODE 22 OUT     - Set pin 22 as output
+ *   #GPIOWRITE 22 1      - Write HIGH to pin 22
+ *   #GPIOREAD 23         - Read pin 23
+ *   #GPIOEVENT 24 RISING - Trigger event on pin 24 rising edge
+ *   #GPIOREG             - Show 8-bit register (all pins)
+ *   #GPIOSET 255         - Set register to 0xFF (all HIGH)
  */
 
 #include <Adafruit_GFX.h>
@@ -113,6 +127,38 @@ uint16_t buttonTextY;  // Y position where button area starts
 unsigned long lastTouch = 0;
 #define TOUCH_DEBOUNCE 200  // milliseconds
 
+// ========== GPIO SYSTEM ==========
+// GPIO pins available on Mega side connector (pins 22-29)
+// These are free and not used by LCD/Touch/Serial
+#define NUM_GPIO 8
+const uint8_t gpioPins[NUM_GPIO] = {22, 23, 24, 25, 26, 27, 28, 29};
+
+// GPIO modes
+enum GPIOMode {
+  GPIO_INPUT,
+  GPIO_INPUT_PULLUP,
+  GPIO_OUTPUT
+};
+
+// GPIO state tracking
+GPIOMode gpioModes[NUM_GPIO];
+uint8_t gpioStates[NUM_GPIO];      // Current state (for inputs) or output value
+uint8_t gpioPrevStates[NUM_GPIO];  // Previous state for change detection
+bool gpioEventEnable[NUM_GPIO];    // Event reporting enabled per pin
+bool gpioEventRising[NUM_GPIO];    // Report rising edge
+bool gpioEventFalling[NUM_GPIO];   // Report falling edge
+
+// GPIO event queue (simple ring buffer)
+#define GPIO_EVENT_QUEUE_SIZE 16
+struct GPIOEvent {
+  uint8_t pin;
+  uint8_t newState;
+  bool rising;  // true=rising, false=falling
+};
+GPIOEvent gpioEventQueue[GPIO_EVENT_QUEUE_SIZE];
+uint8_t gpioEventHead = 0;
+uint8_t gpioEventTail = 0;
+
 void setup() {
   Serial.begin(115200);      // USB/PC
   Serial1.begin(fpga1Baud);  // FPGA1
@@ -145,6 +191,9 @@ void setup() {
   // Initialize touch buttons
   initButtons();
 
+  // Initialize GPIO system
+  initGPIO();
+
   // Startup message
   tft.setTextColor(0x07FF);  // Cyan
   tft.setTextSize(2);
@@ -176,6 +225,12 @@ void loop() {
   if (buttonsVisible) {
     checkTouch();
   }
+
+  // Poll GPIO for changes (event-driven)
+  pollGPIO();
+
+  // Process GPIO events
+  processGPIOEvents();
 
   if (cmdReady) {
     processCmd(cmd);
@@ -560,6 +615,53 @@ void processCmd(String c) {
       hideButtons();
       Serial.println(F("OK:HIDEBTNS"));
 
+    } else if (c.startsWith("#GPIOMODE ")) {
+      // #GPIOMODE <pin> <IN|INPU|OUT>
+      int sp = c.indexOf(' ', 10);
+      if (sp > 0) {
+        uint8_t pin = c.substring(10, sp).toInt();
+        String mode = c.substring(sp + 1);
+        mode.trim();
+        setGPIOMode(pin, mode);
+      }
+
+    } else if (c.startsWith("#GPIOWRITE ")) {
+      // #GPIOWRITE <pin> <0|1|HIGH|LOW>
+      int sp = c.indexOf(' ', 11);
+      if (sp > 0) {
+        uint8_t pin = c.substring(11, sp).toInt();
+        String val = c.substring(sp + 1);
+        val.trim();
+        writeGPIO(pin, val);
+      }
+
+    } else if (c.startsWith("#GPIOREAD ")) {
+      // #GPIOREAD <pin>
+      uint8_t pin = c.substring(10).toInt();
+      readGPIO(pin);
+
+    } else if (c == "#GPIOREADALL") {
+      readAllGPIO();
+
+    } else if (c.startsWith("#GPIOEVENT ")) {
+      // #GPIOEVENT <pin> <NONE|RISING|FALLING|BOTH>
+      int sp = c.indexOf(' ', 11);
+      if (sp > 0) {
+        uint8_t pin = c.substring(11, sp).toInt();
+        String type = c.substring(sp + 1);
+        type.trim();
+        setGPIOEvent(pin, type);
+      }
+
+    } else if (c == "#GPIOREG") {
+      // Show GPIO register (all pin states as 8-bit value)
+      showGPIORegister();
+
+    } else if (c.startsWith("#GPIOSET ")) {
+      // #GPIOSET <0-255> - Set all 8 pins at once
+      uint8_t regVal = c.substring(9).toInt();
+      setGPIORegister(regVal);
+
     } else {
       Serial.print(F("ERR:UNKNOWN:"));
       Serial.println(c);
@@ -779,6 +881,15 @@ void help() {
   Serial.println(F("    UP=0x55 0x50, DN=0x44 0x4E"));
   Serial.println(F("    LT=0x4C 0x54, RT=0x52 0x54"));
   Serial.println();
+  Serial.println(F("GPIO (Pins 22-29):"));
+  Serial.println(F("  #GPIOMODE <pin> <IN|INPU|OUT>"));
+  Serial.println(F("  #GPIOWRITE <pin> <0|1>"));
+  Serial.println(F("  #GPIOREAD <pin>"));
+  Serial.println(F("  #GPIOREADALL - Read all pins"));
+  Serial.println(F("  #GPIOEVENT <pin> <NONE|RISING|FALLING|BOTH>"));
+  Serial.println(F("  #GPIOREG - Show 8-bit register"));
+  Serial.println(F("  #GPIOSET <0-255> - Set register"));
+  Serial.println();
   Serial.println(F("OTHER:"));
   Serial.println(F("  #CLRALL - Clear both screens"));
   Serial.println(F("  #ROT <0-3> - Rotation"));
@@ -967,4 +1078,290 @@ void checkTouch() {
       break;  // Only process one button per touch
     }
   }
+}
+
+// ========== GPIO FUNCTIONS ==========
+
+// Initialize GPIO system
+void initGPIO() {
+  for (uint8_t i = 0; i < NUM_GPIO; i++) {
+    gpioModes[i] = GPIO_INPUT;
+    pinMode(gpioPins[i], INPUT);
+    gpioStates[i] = digitalRead(gpioPins[i]);
+    gpioPrevStates[i] = gpioStates[i];
+    gpioEventEnable[i] = false;
+    gpioEventRising[i] = false;
+    gpioEventFalling[i] = false;
+  }
+  Serial.println(F("GPIO: Pins 22-29 initialized"));
+}
+
+// Poll GPIO pins for changes (called in loop)
+void pollGPIO() {
+  for (uint8_t i = 0; i < NUM_GPIO; i++) {
+    // Only poll input pins
+    if (gpioModes[i] != GPIO_OUTPUT) {
+      uint8_t newState = digitalRead(gpioPins[i]);
+
+      if (newState != gpioPrevStates[i]) {
+        // State changed!
+        gpioStates[i] = newState;
+
+        // Check if event reporting is enabled
+        if (gpioEventEnable[i]) {
+          bool rising = (newState == HIGH && gpioPrevStates[i] == LOW);
+          bool falling = (newState == LOW && gpioPrevStates[i] == HIGH);
+
+          // Queue event if configured
+          if ((rising && gpioEventRising[i]) || (falling && gpioEventFalling[i])) {
+            queueGPIOEvent(i, newState, rising);
+          }
+        }
+
+        gpioPrevStates[i] = newState;
+      }
+    }
+  }
+}
+
+// Queue a GPIO event
+void queueGPIOEvent(uint8_t gpioIdx, uint8_t newState, bool rising) {
+  uint8_t nextHead = (gpioEventHead + 1) % GPIO_EVENT_QUEUE_SIZE;
+  if (nextHead != gpioEventTail) {  // Not full
+    gpioEventQueue[gpioEventHead].pin = gpioIdx;
+    gpioEventQueue[gpioEventHead].newState = newState;
+    gpioEventQueue[gpioEventHead].rising = rising;
+    gpioEventHead = nextHead;
+  }
+}
+
+// Process GPIO events (called in loop)
+void processGPIOEvents() {
+  while (gpioEventTail != gpioEventHead) {
+    GPIOEvent &evt = gpioEventQueue[gpioEventTail];
+
+    // Display event on LCD
+    String msg = "GPIO";
+    msg += gpioPins[evt.pin];
+    msg += evt.rising ? " RISE" : " FALL";
+    showTextBottom(msg);
+
+    // Log to serial
+    Serial.print(F("[GPIO"));
+    Serial.print(gpioPins[evt.pin]);
+    Serial.print(F("] "));
+    Serial.println(evt.rising ? F("RISING") : F("FALLING"));
+
+    gpioEventTail = (gpioEventTail + 1) % GPIO_EVENT_QUEUE_SIZE;
+  }
+}
+
+// Set GPIO mode
+void setGPIOMode(uint8_t pin, String& mode) {
+  // Find GPIO index
+  int8_t idx = -1;
+  for (uint8_t i = 0; i < NUM_GPIO; i++) {
+    if (gpioPins[i] == pin) {
+      idx = i;
+      break;
+    }
+  }
+
+  if (idx < 0) {
+    Serial.println(F("ERR:PIN_22_29_ONLY"));
+    return;
+  }
+
+  mode.trim();
+  if (mode == "IN") {
+    gpioModes[idx] = GPIO_INPUT;
+    pinMode(pin, INPUT);
+    gpioStates[idx] = digitalRead(pin);
+    gpioPrevStates[idx] = gpioStates[idx];
+    Serial.print(F("OK:GPIO"));
+    Serial.print(pin);
+    Serial.println(F("_IN"));
+  } else if (mode == "INPU" || mode == "PULLUP") {
+    gpioModes[idx] = GPIO_INPUT_PULLUP;
+    pinMode(pin, INPUT_PULLUP);
+    gpioStates[idx] = digitalRead(pin);
+    gpioPrevStates[idx] = gpioStates[idx];
+    Serial.print(F("OK:GPIO"));
+    Serial.print(pin);
+    Serial.println(F("_INPU"));
+  } else if (mode == "OUT") {
+    gpioModes[idx] = GPIO_OUTPUT;
+    pinMode(pin, OUTPUT);
+    digitalWrite(pin, gpioStates[idx]);  // Maintain current state
+    Serial.print(F("OK:GPIO"));
+    Serial.print(pin);
+    Serial.println(F("_OUT"));
+  } else {
+    Serial.println(F("ERR:USE_IN_INPU_OUT"));
+  }
+}
+
+// Write GPIO output
+void writeGPIO(uint8_t pin, String& val) {
+  // Find GPIO index
+  int8_t idx = -1;
+  for (uint8_t i = 0; i < NUM_GPIO; i++) {
+    if (gpioPins[i] == pin) {
+      idx = i;
+      break;
+    }
+  }
+
+  if (idx < 0) {
+    Serial.println(F("ERR:PIN_22_29_ONLY"));
+    return;
+  }
+
+  if (gpioModes[idx] != GPIO_OUTPUT) {
+    Serial.println(F("ERR:NOT_OUTPUT"));
+    return;
+  }
+
+  val.trim();
+  uint8_t state = 0;
+  if (val == "1" || val == "HIGH" || val == "H") {
+    state = HIGH;
+  } else if (val == "0" || val == "LOW" || val == "L") {
+    state = LOW;
+  } else {
+    Serial.println(F("ERR:USE_0_1_HIGH_LOW"));
+    return;
+  }
+
+  digitalWrite(pin, state);
+  gpioStates[idx] = state;
+  Serial.print(F("OK:GPIO"));
+  Serial.print(pin);
+  Serial.print(F("="));
+  Serial.println(state);
+}
+
+// Read GPIO input
+void readGPIO(uint8_t pin) {
+  // Find GPIO index
+  int8_t idx = -1;
+  for (uint8_t i = 0; i < NUM_GPIO; i++) {
+    if (gpioPins[i] == pin) {
+      idx = i;
+      break;
+    }
+  }
+
+  if (idx < 0) {
+    Serial.println(F("ERR:PIN_22_29_ONLY"));
+    return;
+  }
+
+  uint8_t state = digitalRead(pin);
+  gpioStates[idx] = state;
+
+  Serial.print(F("GPIO"));
+  Serial.print(pin);
+  Serial.print(F("="));
+  Serial.println(state);
+}
+
+// Read all GPIO pins
+void readAllGPIO() {
+  Serial.print(F("GPIO: "));
+  for (uint8_t i = 0; i < NUM_GPIO; i++) {
+    uint8_t state = digitalRead(gpioPins[i]);
+    gpioStates[i] = state;
+    Serial.print(gpioPins[i]);
+    Serial.print(F("="));
+    Serial.print(state);
+    if (i < NUM_GPIO - 1) Serial.print(F(" "));
+  }
+  Serial.println();
+}
+
+// Set GPIO event configuration
+void setGPIOEvent(uint8_t pin, String& type) {
+  // Find GPIO index
+  int8_t idx = -1;
+  for (uint8_t i = 0; i < NUM_GPIO; i++) {
+    if (gpioPins[i] == pin) {
+      idx = i;
+      break;
+    }
+  }
+
+  if (idx < 0) {
+    Serial.println(F("ERR:PIN_22_29_ONLY"));
+    return;
+  }
+
+  type.trim();
+  if (type == "NONE") {
+    gpioEventEnable[idx] = false;
+    gpioEventRising[idx] = false;
+    gpioEventFalling[idx] = false;
+    Serial.print(F("OK:GPIO"));
+    Serial.print(pin);
+    Serial.println(F("_EV_NONE"));
+  } else if (type == "RISING" || type == "RISE") {
+    gpioEventEnable[idx] = true;
+    gpioEventRising[idx] = true;
+    gpioEventFalling[idx] = false;
+    Serial.print(F("OK:GPIO"));
+    Serial.print(pin);
+    Serial.println(F("_EV_RISE"));
+  } else if (type == "FALLING" || type == "FALL") {
+    gpioEventEnable[idx] = true;
+    gpioEventRising[idx] = false;
+    gpioEventFalling[idx] = true;
+    Serial.print(F("OK:GPIO"));
+    Serial.print(pin);
+    Serial.println(F("_EV_FALL"));
+  } else if (type == "BOTH" || type == "CHANGE") {
+    gpioEventEnable[idx] = true;
+    gpioEventRising[idx] = true;
+    gpioEventFalling[idx] = true;
+    Serial.print(F("OK:GPIO"));
+    Serial.print(pin);
+    Serial.println(F("_EV_BOTH"));
+  } else {
+    Serial.println(F("ERR:USE_NONE_RISING_FALLING_BOTH"));
+  }
+}
+
+// Show GPIO register (8 pins as 8-bit value)
+void showGPIORegister() {
+  uint8_t regVal = 0;
+  for (uint8_t i = 0; i < NUM_GPIO; i++) {
+    if (gpioStates[i]) {
+      regVal |= (1 << i);
+    }
+  }
+
+  Serial.print(F("GPIOREG=0x"));
+  if (regVal < 16) Serial.print(F("0"));
+  Serial.print(regVal, HEX);
+  Serial.print(F(" ("));
+  Serial.print(regVal);
+  Serial.print(F(") BIN="));
+  for (int i = 7; i >= 0; i--) {
+    Serial.print((regVal >> i) & 1);
+  }
+  Serial.println();
+}
+
+// Set GPIO register (8 pins at once, outputs only)
+void setGPIORegister(uint8_t regVal) {
+  for (uint8_t i = 0; i < NUM_GPIO; i++) {
+    if (gpioModes[i] == GPIO_OUTPUT) {
+      uint8_t bitVal = (regVal >> i) & 1;
+      digitalWrite(gpioPins[i], bitVal);
+      gpioStates[i] = bitVal;
+    }
+  }
+
+  Serial.print(F("OK:GPIOSET=0x"));
+  if (regVal < 16) Serial.print(F("0"));
+  Serial.println(regVal, HEX);
 }
