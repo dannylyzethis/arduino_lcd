@@ -484,6 +484,90 @@ void applyTermination(HardwareSerial& serial) {
   }
 }
 
+// Read response bytes from FPGA with timeout
+void readFPGAResponse(uint8_t numBytes, uint16_t timeout) {
+  HardwareSerial& fpga = getFPGA();
+  uint8_t buffer[64];
+  uint8_t bytesRead = 0;
+  unsigned long startTime = millis();
+
+  // Get RX mode
+  FPGARxMode rxMode;
+  switch (activeFpga) {
+    case 1: rxMode = fpga1RxMode; break;
+    case 2: rxMode = fpga2RxMode; break;
+    case 3: rxMode = fpga3RxMode; break;
+    default: rxMode = FPGA_RX_TEXT; break;
+  }
+
+  Serial.print(F("[FPGA"));
+  Serial.print(activeFpga);
+  Serial.print(F(" READ "));
+  Serial.print(numBytes);
+  Serial.print(F(" bytes] "));
+
+  // Read bytes with timeout
+  while (bytesRead < numBytes && (millis() - startTime) < timeout) {
+    if (fpga.available()) {
+      buffer[bytesRead++] = fpga.read();
+    }
+  }
+
+  if (bytesRead == 0) {
+    Serial.println(F("TIMEOUT"));
+    showTextBottom("FPGA: TIMEOUT");
+    return;
+  }
+
+  // Display based on RX mode
+  if (rxMode == FPGA_RX_BINARY) {
+    // Binary mode: show as hex
+    String hexStr = "";
+    for (uint8_t i = 0; i < bytesRead; i++) {
+      if (i > 0) {
+        Serial.print(F(" "));
+        hexStr += " ";
+      }
+      Serial.print(F("0x"));
+      if (buffer[i] < 16) Serial.print(F("0"));
+      Serial.print(buffer[i], HEX);
+
+      hexStr += "0x";
+      if (buffer[i] < 16) hexStr += "0";
+      hexStr += String(buffer[i], HEX);
+    }
+    Serial.println();
+    showTextBottom(hexStr);
+
+  } else {
+    // Text mode: show as characters
+    String textStr = "";
+    for (uint8_t i = 0; i < bytesRead; i++) {
+      char c = (char)buffer[i];
+      Serial.write(c);
+      if (isPrintable(c)) {
+        textStr += c;
+      } else if (c == '\n' || c == '\r') {
+        // Skip line endings in display
+      } else {
+        // Non-printable: show as hex
+        textStr += "[0x";
+        if (buffer[i] < 16) textStr += "0";
+        textStr += String(buffer[i], HEX);
+        textStr += "]";
+      }
+    }
+    Serial.println();
+    showTextBottom(textStr);
+  }
+
+  Serial.print(F("("));
+  Serial.print(bytesRead);
+  Serial.print(F("/"));
+  Serial.print(numBytes);
+  Serial.println(F(" bytes)"));
+}
+
 // Set UART hardware stop bits (1 or 2) - ATmega2560 specific
 // Directly manipulates UCSRnC registers
 void setSerialStopBits(uint8_t serialNum, uint8_t stopBits) {
@@ -768,6 +852,54 @@ void processCmd(String c) {
       int sent = sendHexBytes(hexData);
       Serial.print(F("OK:SENT_"));
       Serial.println(sent);
+
+    } else if (c.startsWith("#FPGAREAD ")) {
+      // #FPGAREAD <num_bytes> [timeout_ms]
+      // Read expected number of bytes from FPGA with optional timeout
+      int sp = c.indexOf(' ', 10);
+      uint8_t numBytes = c.substring(10, sp > 0 ? sp : c.length()).toInt();
+      uint16_t timeout = 1000;  // Default 1 second
+
+      if (sp > 0) {
+        timeout = c.substring(sp + 1).toInt();
+        if (timeout == 0) timeout = 1000;
+      }
+
+      if (numBytes > 0 && numBytes <= 64) {
+        readFPGAResponse(numBytes, timeout);
+      } else {
+        Serial.println(F("ERR:BYTES_1_TO_64"));
+      }
+
+    } else if (c.startsWith("#FPGAQUERY ")) {
+      // #FPGAQUERY <send_hex> <expect_bytes> [timeout]
+      // Send bytes, then read response
+      // Example: #FPGAQUERY 52 45 47 4 1000  (send "REG", expect 4 bytes, 1s timeout)
+      String rest = c.substring(11);
+      rest.trim();
+
+      // Find how many bytes to expect (last number before optional timeout)
+      int lastSpace = rest.lastIndexOf(' ');
+      int secondLastSpace = rest.lastIndexOf(' ', lastSpace - 1);
+
+      if (lastSpace > 0 && secondLastSpace > 0) {
+        String hexData = rest.substring(0, secondLastSpace);
+        uint8_t expectBytes = rest.substring(secondLastSpace + 1, lastSpace).toInt();
+        uint16_t timeout = rest.substring(lastSpace + 1).toInt();
+
+        if (timeout == 0) timeout = 1000;
+        if (expectBytes > 0 && expectBytes <= 64) {
+          // Send query bytes
+          sendHexBytes(hexData);
+          delay(10);  // Brief delay for FPGA processing
+          // Read response
+          readFPGAResponse(expectBytes, timeout);
+        } else {
+          Serial.println(F("ERR:EXPECT_1_TO_64"));
+        }
+      } else {
+        Serial.println(F("ERR:FORMAT_QUERY_HEX_BYTES_TIMEOUT"));
+      }
 
     } else if (c == "#HELP") {
       help();
@@ -1087,6 +1219,10 @@ void help() {
   Serial.println(F("  #FPGASEND <text>"));
   Serial.println(F("  #FPGAPING"));
   Serial.println(F("  #FPGABYTES <hex>"));
+  Serial.println(F("  #FPGAREAD <bytes> [timeout]"));
+  Serial.println(F("    Read N bytes from FPGA"));
+  Serial.println(F("  #FPGAQUERY <hex> <expect> [timeout]"));
+  Serial.println(F("    Send hex, read response"));
   Serial.println(F("  #TERM <NONE|LF|CR|CRLF|0xFF|255>"));
   Serial.println(F("    (TX termination byte)"));
   Serial.println();
