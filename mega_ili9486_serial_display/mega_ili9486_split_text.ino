@@ -4,21 +4,28 @@
  * Top=Commands, Bottom=FPGA/Serial Devices
  * Hardware Serial1/2/3 for FPGA (easier than registers!)
  *
- * Serial Ports (with hardware stop bit control and RX modes):
+ * Serial Ports (with hardware stop bit control, RX modes, and parsing):
  * - Serial:  USB/PC (115200 baud)
- * - Serial1: FPGA1 (TX1=18, RX1=19) - Default, 1 stop bit, TEXT mode
- * - Serial2: FPGA2 (TX2=16, RX2=17) - 1 stop bit, TEXT mode
- * - Serial3: FPGA3 (TX3=14, RX3=15) - 1 stop bit, TEXT mode
+ * - Serial1: FPGA1 (TX1=18, RX1=19) - Default, 1 stop bit, TEXT mode, NONE parse
+ * - Serial2: FPGA2 (TX2=16, RX2=17) - 1 stop bit, TEXT mode, NONE parse
+ * - Serial3: FPGA3 (TX3=14, RX3=15) - 1 stop bit, TEXT mode, NONE parse
  * Configure:
- *   #FPGA1STOP 2      - Set 2 hardware stop bits
- *   #FPGA1RX BINARY   - Receive bytes as hex (for binary protocols)
- *   #FPGA1RX TEXT     - Receive as text (default)
+ *   #FPGA1STOP 2        - Set 2 hardware stop bits
+ *   #FPGA1RX BINARY     - Receive bytes as hex (for binary protocols)
+ *   #FPGA1RX TEXT       - Receive as text (default)
+ *   #FPGA1PARSE ASCII   - Parse bytes as ASCII with [XX] for non-printable
+ *   #FPGA1PARSE DEC     - Display bytes as decimal numbers
+ *   #FPGA1PARSE MIXED   - Show both hex and ASCII: "0x41='A'"
+ *   #STATUS             - Show all current settings
+ * Query any setting with ?: #FPGA1BAUD ?, #FPGA1RX ?, #TERM ?, etc.
  *
  * Touch Buttons: 4 buttons send byte arrays to FPGA
  * - UP:    0x55 0x50 ("UP")
  * - DOWN:  0x44 0x4E ("DN")
  * - LEFT:  0x4C 0x54 ("LT")
  * - RIGHT: 0x52 0x54 ("RT")
+ * - Shows TX bytes on LCD bottom screen: "TX: 0x55 0x50"
+ * - Works correctly in all screen rotations (0-3)
  * Customize in initButtons() function (search for "Initialize button layout")
  *
  * Termination Control (applies to ALL serial transmissions):
@@ -26,6 +33,7 @@
  * - Use #TERM command: #TERM LF, #TERM CRLF, #TERM 0xFF, #TERM 255, etc.
  * - Default: LF (\n)
  * - Custom byte mode for stop bits: #TERM 0xFF or #TERM FF
+ * - Query: #TERM ?
  * - Applies to: >>> bypass, touch buttons, #FPGASEND, #FPGABYTES, #FPGAPING
  * - Ensures proper framing for all FPGA/embedded communication
  *
@@ -117,6 +125,18 @@ enum FPGARxMode {
 FPGARxMode fpga1RxMode = FPGA_RX_TEXT;
 FPGARxMode fpga2RxMode = FPGA_RX_TEXT;
 FPGARxMode fpga3RxMode = FPGA_RX_TEXT;
+
+// FPGA response parsing modes (for displaying binary data as formatted text)
+enum FPGAParseMode {
+  PARSE_NONE,      // No special parsing (default hex display)
+  PARSE_ASCII,     // Show as ASCII characters with [XX] for non-printable
+  PARSE_DEC,       // Show as decimal numbers
+  PARSE_MIXED      // Show both hex and ASCII: "0x41 'A'"
+};
+
+FPGAParseMode fpga1ParseMode = PARSE_NONE;
+FPGAParseMode fpga2ParseMode = PARSE_NONE;
+FPGAParseMode fpga3ParseMode = PARSE_NONE;
 
 // Termination character modes
 enum TermMode {
@@ -267,38 +287,82 @@ void loop() {
 }
 
 void checkFPGASerial(HardwareSerial& serial, uint8_t id) {
-  // Get RX mode for this serial port
+  // Get RX mode and parse mode for this serial port
   FPGARxMode rxMode;
+  FPGAParseMode parseMode;
   switch (id) {
-    case 1: rxMode = fpga1RxMode; break;
-    case 2: rxMode = fpga2RxMode; break;
-    case 3: rxMode = fpga3RxMode; break;
-    default: rxMode = FPGA_RX_TEXT; break;
+    case 1: rxMode = fpga1RxMode; parseMode = fpga1ParseMode; break;
+    case 2: rxMode = fpga2RxMode; parseMode = fpga2ParseMode; break;
+    case 3: rxMode = fpga3RxMode; parseMode = fpga3ParseMode; break;
+    default: rxMode = FPGA_RX_TEXT; parseMode = PARSE_NONE; break;
   }
 
   while (serial.available()) {
     uint8_t byteVal = serial.read();
 
     if (rxMode == FPGA_RX_BINARY) {
-      // Binary mode: display as hex
-      Serial.print(F("0x"));
-      if (byteVal < 16) Serial.print(F("0"));
-      Serial.print(byteVal, HEX);
-      Serial.print(F(" "));
+      // Binary mode: display based on parse mode
+      String byteStr = "";
+
+      switch (parseMode) {
+        case PARSE_ASCII:
+          // Show as ASCII with [XX] for non-printable
+          if (isPrintable(byteVal)) {
+            byteStr = String((char)byteVal);
+            Serial.write(byteVal);
+          } else {
+            byteStr = "[";
+            if (byteVal < 16) byteStr += "0";
+            byteStr += String(byteVal, HEX);
+            byteStr += "]";
+            Serial.print(byteStr);
+          }
+          break;
+
+        case PARSE_DEC:
+          // Show as decimal
+          byteStr = String(byteVal);
+          Serial.print(byteVal);
+          Serial.print(F(" "));
+          break;
+
+        case PARSE_MIXED:
+          // Show both hex and ASCII: "0x41='A'"
+          byteStr = "0x";
+          if (byteVal < 16) byteStr += "0";
+          byteStr += String(byteVal, HEX);
+          if (isPrintable(byteVal)) {
+            byteStr += "='";
+            byteStr += (char)byteVal;
+            byteStr += "'";
+          }
+          Serial.print(byteStr);
+          Serial.print(F(" "));
+          break;
+
+        case PARSE_NONE:
+        default:
+          // Default hex display
+          byteStr = "0x";
+          if (byteVal < 16) byteStr += "0";
+          byteStr += String(byteVal, HEX);
+          Serial.print(F("0x"));
+          if (byteVal < 16) Serial.print(F("0"));
+          Serial.print(byteVal, HEX);
+          Serial.print(F(" "));
+          break;
+      }
 
       // Add to buffer for LCD display
       if (fpgaBuffer.length() < 160) {
-        if (fpgaBuffer.length() > 0) fpgaBuffer += " ";
-        fpgaBuffer += "0x";
-        if (byteVal < 16) fpgaBuffer += "0";
-        fpgaBuffer += String(byteVal, HEX);
+        if (fpgaBuffer.length() > 0 && parseMode != PARSE_ASCII) {
+          fpgaBuffer += " ";
+        }
+        fpgaBuffer += byteStr;
       } else {
         // Buffer full, display and start new line
         showTextBottom(fpgaBuffer);
-        fpgaBuffer = "";
-        fpgaBuffer += "0x";
-        if (byteVal < 16) fpgaBuffer += "0";
-        fpgaBuffer += String(byteVal, HEX);
+        fpgaBuffer = byteStr;
       }
 
       // Display every 10 bytes or on pause
@@ -724,113 +788,259 @@ void processCmd(String c) {
       String col = c.substring(10);
       setBotCol(col);
 
-    } else if (c.startsWith("#FPGASEL ")) {
-      uint8_t sel = c.substring(9).toInt();
-      if (sel >= 1 && sel <= 3) {
-        activeFpga = sel;
-        Serial.print(F("OK:FPGA"));
-        Serial.println(sel);
+    } else if (c == "#STATUS") {
+      // Show all current settings
+      Serial.println(F("=== STATUS ==="));
+      Serial.print(F("Active FPGA: "));
+      Serial.println(activeFpga);
+
+      Serial.print(F("FPGA1: "));
+      Serial.print(fpga1Baud);
+      Serial.print(F(" baud, "));
+      Serial.print(fpga1StopBits);
+      Serial.print(F(" stop, "));
+      Serial.print(fpga1RxMode == FPGA_RX_TEXT ? F("TEXT") : F("BINARY"));
+      Serial.print(F(", Parse="));
+      switch (fpga1ParseMode) {
+        case PARSE_NONE: Serial.println(F("NONE")); break;
+        case PARSE_ASCII: Serial.println(F("ASCII")); break;
+        case PARSE_DEC: Serial.println(F("DEC")); break;
+        case PARSE_MIXED: Serial.println(F("MIXED")); break;
+      }
+
+      Serial.print(F("FPGA2: "));
+      Serial.print(fpga2Baud);
+      Serial.print(F(" baud, "));
+      Serial.print(fpga2StopBits);
+      Serial.print(F(" stop, "));
+      Serial.print(fpga2RxMode == FPGA_RX_TEXT ? F("TEXT") : F("BINARY"));
+      Serial.print(F(", Parse="));
+      switch (fpga2ParseMode) {
+        case PARSE_NONE: Serial.println(F("NONE")); break;
+        case PARSE_ASCII: Serial.println(F("ASCII")); break;
+        case PARSE_DEC: Serial.println(F("DEC")); break;
+        case PARSE_MIXED: Serial.println(F("MIXED")); break;
+      }
+
+      Serial.print(F("FPGA3: "));
+      Serial.print(fpga3Baud);
+      Serial.print(F(" baud, "));
+      Serial.print(fpga3StopBits);
+      Serial.print(F(" stop, "));
+      Serial.print(fpga3RxMode == FPGA_RX_TEXT ? F("TEXT") : F("BINARY"));
+      Serial.print(F(", Parse="));
+      switch (fpga3ParseMode) {
+        case PARSE_NONE: Serial.println(F("NONE")); break;
+        case PARSE_ASCII: Serial.println(F("ASCII")); break;
+        case PARSE_DEC: Serial.println(F("DEC")); break;
+        case PARSE_MIXED: Serial.println(F("MIXED")); break;
+      }
+
+      Serial.print(F("Termination: "));
+      switch (bypassTerm) {
+        case TERM_NONE: Serial.println(F("NONE")); break;
+        case TERM_LF: Serial.println(F("LF")); break;
+        case TERM_CR: Serial.println(F("CR")); break;
+        case TERM_CRLF: Serial.println(F("CRLF")); break;
+        case TERM_CUSTOM:
+          Serial.print(F("CUSTOM 0x"));
+          if (customTermByte < 16) Serial.print(F("0"));
+          Serial.println(customTermByte, HEX);
+          break;
+      }
+      Serial.print(F("Rotation: "));
+      Serial.println(tft.getRotation());
+      Serial.print(F("Buttons: "));
+      Serial.println(buttonsVisible ? F("VISIBLE") : F("HIDDEN"));
+      Serial.println(F("============="));
+
+    } else if (c.startsWith("#FPGASEL")) {
+      String param = c.substring(8);
+      param.trim();
+      if (param == "?") {
+        // Query current selection
+        Serial.print(F("FPGASEL="));
+        Serial.println(activeFpga);
       } else {
-        Serial.println(F("ERR:USE_1_2_3"));
+        uint8_t sel = param.toInt();
+        if (sel >= 1 && sel <= 3) {
+          activeFpga = sel;
+          Serial.print(F("OK:FPGA"));
+          Serial.println(sel);
+        } else {
+          Serial.println(F("ERR:USE_1_2_3"));
+        }
       }
 
-    } else if (c.startsWith("#FPGA1BAUD ")) {
-      unsigned long baud = c.substring(11).toInt();
-      if (baud >= 300 && baud <= 115200) {
-        fpga1Baud = baud;
-        Serial1.end();
-        Serial1.begin(fpga1Baud);
-        Serial.print(F("OK:FPGA1_"));
-        Serial.println(baud);
-      }
-
-    } else if (c.startsWith("#FPGA2BAUD ")) {
-      unsigned long baud = c.substring(11).toInt();
-      if (baud >= 300 && baud <= 115200) {
-        fpga2Baud = baud;
-        Serial2.end();
-        Serial2.begin(fpga2Baud);
-        Serial.print(F("OK:FPGA2_"));
-        Serial.println(baud);
-      }
-
-    } else if (c.startsWith("#FPGA3BAUD ")) {
-      unsigned long baud = c.substring(11).toInt();
-      if (baud >= 300 && baud <= 115200) {
-        fpga3Baud = baud;
-        Serial3.end();
-        Serial3.begin(fpga3Baud);
-        Serial.print(F("OK:FPGA3_"));
-        Serial.println(baud);
-      }
-
-    } else if (c.startsWith("#FPGA1STOP ")) {
-      uint8_t stopBits = c.substring(11).toInt();
-      if (stopBits == 1 || stopBits == 2) {
-        setSerialStopBits(1, stopBits);
-        Serial.print(F("OK:FPGA1_STOP_"));
-        Serial.println(stopBits);
+    } else if (c.startsWith("#FPGA1BAUD")) {
+      String param = c.substring(10);
+      param.trim();
+      if (param == "?") {
+        // Query current baud rate
+        Serial.print(F("FPGA1BAUD="));
+        Serial.println(fpga1Baud);
       } else {
-        Serial.println(F("ERR:USE_1_OR_2"));
+        unsigned long baud = param.toInt();
+        if (baud >= 300 && baud <= 115200) {
+          fpga1Baud = baud;
+          Serial1.end();
+          Serial1.begin(fpga1Baud);
+          Serial.print(F("OK:FPGA1_"));
+          Serial.println(baud);
+        } else {
+          Serial.println(F("ERR:BAUD_300_115200"));
+        }
       }
 
-    } else if (c.startsWith("#FPGA2STOP ")) {
-      uint8_t stopBits = c.substring(11).toInt();
-      if (stopBits == 1 || stopBits == 2) {
-        setSerialStopBits(2, stopBits);
-        Serial.print(F("OK:FPGA2_STOP_"));
-        Serial.println(stopBits);
+    } else if (c.startsWith("#FPGA2BAUD")) {
+      String param = c.substring(10);
+      param.trim();
+      if (param == "?") {
+        // Query current baud rate
+        Serial.print(F("FPGA2BAUD="));
+        Serial.println(fpga2Baud);
       } else {
-        Serial.println(F("ERR:USE_1_OR_2"));
+        unsigned long baud = param.toInt();
+        if (baud >= 300 && baud <= 115200) {
+          fpga2Baud = baud;
+          Serial2.end();
+          Serial2.begin(fpga2Baud);
+          Serial.print(F("OK:FPGA2_"));
+          Serial.println(baud);
+        } else {
+          Serial.println(F("ERR:BAUD_300_115200"));
+        }
       }
 
-    } else if (c.startsWith("#FPGA3STOP ")) {
-      uint8_t stopBits = c.substring(11).toInt();
-      if (stopBits == 1 || stopBits == 2) {
-        setSerialStopBits(3, stopBits);
-        Serial.print(F("OK:FPGA3_STOP_"));
-        Serial.println(stopBits);
+    } else if (c.startsWith("#FPGA3BAUD")) {
+      String param = c.substring(10);
+      param.trim();
+      if (param == "?") {
+        // Query current baud rate
+        Serial.print(F("FPGA3BAUD="));
+        Serial.println(fpga3Baud);
       } else {
-        Serial.println(F("ERR:USE_1_OR_2"));
+        unsigned long baud = param.toInt();
+        if (baud >= 300 && baud <= 115200) {
+          fpga3Baud = baud;
+          Serial3.end();
+          Serial3.begin(fpga3Baud);
+          Serial.print(F("OK:FPGA3_"));
+          Serial.println(baud);
+        } else {
+          Serial.println(F("ERR:BAUD_300_115200"));
+        }
       }
 
-    } else if (c.startsWith("#FPGA1RX ")) {
-      String mode = c.substring(9);
-      mode.trim();
-      if (mode == "TEXT") {
-        fpga1RxMode = FPGA_RX_TEXT;
-        Serial.println(F("OK:FPGA1_RX_TEXT"));
-      } else if (mode == "BINARY" || mode == "BIN") {
-        fpga1RxMode = FPGA_RX_BINARY;
-        Serial.println(F("OK:FPGA1_RX_BINARY"));
+    } else if (c.startsWith("#FPGA1STOP")) {
+      String param = c.substring(10);
+      param.trim();
+      if (param == "?") {
+        // Query current stop bits
+        Serial.print(F("FPGA1STOP="));
+        Serial.println(fpga1StopBits);
       } else {
-        Serial.println(F("ERR:USE_TEXT_or_BINARY"));
+        uint8_t stopBits = param.toInt();
+        if (stopBits == 1 || stopBits == 2) {
+          setSerialStopBits(1, stopBits);
+          Serial.print(F("OK:FPGA1_STOP_"));
+          Serial.println(stopBits);
+        } else {
+          Serial.println(F("ERR:USE_1_OR_2"));
+        }
       }
 
-    } else if (c.startsWith("#FPGA2RX ")) {
-      String mode = c.substring(9);
-      mode.trim();
-      if (mode == "TEXT") {
-        fpga2RxMode = FPGA_RX_TEXT;
-        Serial.println(F("OK:FPGA2_RX_TEXT"));
-      } else if (mode == "BINARY" || mode == "BIN") {
-        fpga2RxMode = FPGA_RX_BINARY;
-        Serial.println(F("OK:FPGA2_RX_BINARY"));
+    } else if (c.startsWith("#FPGA2STOP")) {
+      String param = c.substring(10);
+      param.trim();
+      if (param == "?") {
+        // Query current stop bits
+        Serial.print(F("FPGA2STOP="));
+        Serial.println(fpga2StopBits);
       } else {
-        Serial.println(F("ERR:USE_TEXT_or_BINARY"));
+        uint8_t stopBits = param.toInt();
+        if (stopBits == 1 || stopBits == 2) {
+          setSerialStopBits(2, stopBits);
+          Serial.print(F("OK:FPGA2_STOP_"));
+          Serial.println(stopBits);
+        } else {
+          Serial.println(F("ERR:USE_1_OR_2"));
+        }
       }
 
-    } else if (c.startsWith("#FPGA3RX ")) {
-      String mode = c.substring(9);
-      mode.trim();
-      if (mode == "TEXT") {
-        fpga3RxMode = FPGA_RX_TEXT;
-        Serial.println(F("OK:FPGA3_RX_TEXT"));
-      } else if (mode == "BINARY" || mode == "BIN") {
-        fpga3RxMode = FPGA_RX_BINARY;
-        Serial.println(F("OK:FPGA3_RX_BINARY"));
+    } else if (c.startsWith("#FPGA3STOP")) {
+      String param = c.substring(10);
+      param.trim();
+      if (param == "?") {
+        // Query current stop bits
+        Serial.print(F("FPGA3STOP="));
+        Serial.println(fpga3StopBits);
       } else {
-        Serial.println(F("ERR:USE_TEXT_or_BINARY"));
+        uint8_t stopBits = param.toInt();
+        if (stopBits == 1 || stopBits == 2) {
+          setSerialStopBits(3, stopBits);
+          Serial.print(F("OK:FPGA3_STOP_"));
+          Serial.println(stopBits);
+        } else {
+          Serial.println(F("ERR:USE_1_OR_2"));
+        }
+      }
+
+    } else if (c.startsWith("#FPGA1RX")) {
+      String param = c.substring(8);
+      param.trim();
+      if (param == "?") {
+        // Query current RX mode
+        Serial.print(F("FPGA1RX="));
+        Serial.println(fpga1RxMode == FPGA_RX_TEXT ? F("TEXT") : F("BINARY"));
+      } else {
+        if (param == "TEXT") {
+          fpga1RxMode = FPGA_RX_TEXT;
+          Serial.println(F("OK:FPGA1_RX_TEXT"));
+        } else if (param == "BINARY" || param == "BIN") {
+          fpga1RxMode = FPGA_RX_BINARY;
+          Serial.println(F("OK:FPGA1_RX_BINARY"));
+        } else {
+          Serial.println(F("ERR:USE_TEXT_or_BINARY"));
+        }
+      }
+
+    } else if (c.startsWith("#FPGA2RX")) {
+      String param = c.substring(8);
+      param.trim();
+      if (param == "?") {
+        // Query current RX mode
+        Serial.print(F("FPGA2RX="));
+        Serial.println(fpga2RxMode == FPGA_RX_TEXT ? F("TEXT") : F("BINARY"));
+      } else {
+        if (param == "TEXT") {
+          fpga2RxMode = FPGA_RX_TEXT;
+          Serial.println(F("OK:FPGA2_RX_TEXT"));
+        } else if (param == "BINARY" || param == "BIN") {
+          fpga2RxMode = FPGA_RX_BINARY;
+          Serial.println(F("OK:FPGA2_RX_BINARY"));
+        } else {
+          Serial.println(F("ERR:USE_TEXT_or_BINARY"));
+        }
+      }
+
+    } else if (c.startsWith("#FPGA3RX")) {
+      String param = c.substring(8);
+      param.trim();
+      if (param == "?") {
+        // Query current RX mode
+        Serial.print(F("FPGA3RX="));
+        Serial.println(fpga3RxMode == FPGA_RX_TEXT ? F("TEXT") : F("BINARY"));
+      } else {
+        if (param == "TEXT") {
+          fpga3RxMode = FPGA_RX_TEXT;
+          Serial.println(F("OK:FPGA3_RX_TEXT"));
+        } else if (param == "BINARY" || param == "BIN") {
+          fpga3RxMode = FPGA_RX_BINARY;
+          Serial.println(F("OK:FPGA3_RX_BINARY"));
+        } else {
+          Serial.println(F("ERR:USE_TEXT_or_BINARY"));
+        }
       }
 
     } else if (c.startsWith("#FPGASEND ")) {
@@ -851,7 +1061,11 @@ void processCmd(String c) {
       hexData.trim();
       int sent = sendHexBytes(hexData);
       Serial.print(F("OK:SENT_"));
-      Serial.println(sent);
+      Serial.print(sent);
+      Serial.println(F(" bytes"));
+
+      // Show TX on LCD bottom
+      showTextBottom("TX: " + hexData);
 
     } else if (c.startsWith("#FPGAREAD ")) {
       // #FPGAREAD <num_bytes> [timeout_ms]
@@ -901,55 +1115,165 @@ void processCmd(String c) {
         Serial.println(F("ERR:FORMAT_QUERY_HEX_BYTES_TIMEOUT"));
       }
 
+    } else if (c.startsWith("#FPGA1PARSE")) {
+      String param = c.substring(11);
+      param.trim();
+      if (param == "?") {
+        // Query current parse mode
+        Serial.print(F("FPGA1PARSE="));
+        switch (fpga1ParseMode) {
+          case PARSE_NONE: Serial.println(F("NONE")); break;
+          case PARSE_ASCII: Serial.println(F("ASCII")); break;
+          case PARSE_DEC: Serial.println(F("DEC")); break;
+          case PARSE_MIXED: Serial.println(F("MIXED")); break;
+        }
+      } else {
+        if (param == "NONE") {
+          fpga1ParseMode = PARSE_NONE;
+          Serial.println(F("OK:FPGA1_PARSE_NONE"));
+        } else if (param == "ASCII") {
+          fpga1ParseMode = PARSE_ASCII;
+          Serial.println(F("OK:FPGA1_PARSE_ASCII"));
+        } else if (param == "DEC") {
+          fpga1ParseMode = PARSE_DEC;
+          Serial.println(F("OK:FPGA1_PARSE_DEC"));
+        } else if (param == "MIXED") {
+          fpga1ParseMode = PARSE_MIXED;
+          Serial.println(F("OK:FPGA1_PARSE_MIXED"));
+        } else {
+          Serial.println(F("ERR:USE_NONE_ASCII_DEC_MIXED"));
+        }
+      }
+
+    } else if (c.startsWith("#FPGA2PARSE")) {
+      String param = c.substring(11);
+      param.trim();
+      if (param == "?") {
+        // Query current parse mode
+        Serial.print(F("FPGA2PARSE="));
+        switch (fpga2ParseMode) {
+          case PARSE_NONE: Serial.println(F("NONE")); break;
+          case PARSE_ASCII: Serial.println(F("ASCII")); break;
+          case PARSE_DEC: Serial.println(F("DEC")); break;
+          case PARSE_MIXED: Serial.println(F("MIXED")); break;
+        }
+      } else {
+        if (param == "NONE") {
+          fpga2ParseMode = PARSE_NONE;
+          Serial.println(F("OK:FPGA2_PARSE_NONE"));
+        } else if (param == "ASCII") {
+          fpga2ParseMode = PARSE_ASCII;
+          Serial.println(F("OK:FPGA2_PARSE_ASCII"));
+        } else if (param == "DEC") {
+          fpga2ParseMode = PARSE_DEC;
+          Serial.println(F("OK:FPGA2_PARSE_DEC"));
+        } else if (param == "MIXED") {
+          fpga2ParseMode = PARSE_MIXED;
+          Serial.println(F("OK:FPGA2_PARSE_MIXED"));
+        } else {
+          Serial.println(F("ERR:USE_NONE_ASCII_DEC_MIXED"));
+        }
+      }
+
+    } else if (c.startsWith("#FPGA3PARSE")) {
+      String param = c.substring(11);
+      param.trim();
+      if (param == "?") {
+        // Query current parse mode
+        Serial.print(F("FPGA3PARSE="));
+        switch (fpga3ParseMode) {
+          case PARSE_NONE: Serial.println(F("NONE")); break;
+          case PARSE_ASCII: Serial.println(F("ASCII")); break;
+          case PARSE_DEC: Serial.println(F("DEC")); break;
+          case PARSE_MIXED: Serial.println(F("MIXED")); break;
+        }
+      } else {
+        if (param == "NONE") {
+          fpga3ParseMode = PARSE_NONE;
+          Serial.println(F("OK:FPGA3_PARSE_NONE"));
+        } else if (param == "ASCII") {
+          fpga3ParseMode = PARSE_ASCII;
+          Serial.println(F("OK:FPGA3_PARSE_ASCII"));
+        } else if (param == "DEC") {
+          fpga3ParseMode = PARSE_DEC;
+          Serial.println(F("OK:FPGA3_PARSE_DEC"));
+        } else if (param == "MIXED") {
+          fpga3ParseMode = PARSE_MIXED;
+          Serial.println(F("OK:FPGA3_PARSE_MIXED"));
+        } else {
+          Serial.println(F("ERR:USE_NONE_ASCII_DEC_MIXED"));
+        }
+      }
+
     } else if (c == "#HELP") {
       help();
 
     } else if (c == "#ID") {
       Serial.println(F("COM LCD MEGA ILI9486 SPLIT TEXT"));
 
-    } else if (c.startsWith("#TERM ")) {
-      String mode = c.substring(6);
-      mode.trim();
-      if (mode == "NONE") {
-        bypassTerm = TERM_NONE;
-        Serial.println(F("OK:TERM_NONE"));
-      } else if (mode == "LF" || mode == "\\N") {
-        bypassTerm = TERM_LF;
-        Serial.println(F("OK:TERM_LF"));
-      } else if (mode == "CR" || mode == "\\R") {
-        bypassTerm = TERM_CR;
-        Serial.println(F("OK:TERM_CR"));
-      } else if (mode == "CRLF" || mode == "\\R\\N") {
-        bypassTerm = TERM_CRLF;
-        Serial.println(F("OK:TERM_CRLF"));
-      } else {
-        // Try to parse as custom byte value (hex or decimal)
-        long value = -1;
-        if (mode.startsWith("0X") || mode.startsWith("0x")) {
-          // Hex format: 0xFF or 0XFF
-          value = strtol(mode.c_str() + 2, NULL, 16);
-        } else if (mode.length() <= 2 &&
-                   ((mode[0] >= '0' && mode[0] <= '9') ||
-                    (mode[0] >= 'A' && mode[0] <= 'F') ||
-                    (mode[0] >= 'a' && mode[0] <= 'f'))) {
-          // Try hex without 0x prefix (FF, 0A, etc)
-          value = strtol(mode.c_str(), NULL, 16);
-        } else {
-          // Try decimal (255, 10, etc)
-          value = mode.toInt();
+    } else if (c.startsWith("#TERM")) {
+      String param = c.substring(5);
+      param.trim();
+      if (param == "?") {
+        // Query current termination mode
+        Serial.print(F("TERM="));
+        switch (bypassTerm) {
+          case TERM_NONE: Serial.println(F("NONE")); break;
+          case TERM_LF: Serial.println(F("LF")); break;
+          case TERM_CR: Serial.println(F("CR")); break;
+          case TERM_CRLF: Serial.println(F("CRLF")); break;
+          case TERM_CUSTOM:
+            Serial.print(F("CUSTOM 0x"));
+            if (customTermByte < 16) Serial.print(F("0"));
+            Serial.print(customTermByte, HEX);
+            Serial.print(F(" ("));
+            Serial.print(customTermByte);
+            Serial.println(F(")"));
+            break;
         }
-
-        if (value >= 0 && value <= 255) {
-          bypassTerm = TERM_CUSTOM;
-          customTermByte = (uint8_t)value;
-          Serial.print(F("OK:TERM_CUSTOM_0x"));
-          if (customTermByte < 16) Serial.print(F("0"));
-          Serial.print(customTermByte, HEX);
-          Serial.print(F(" ("));
-          Serial.print(customTermByte);
-          Serial.println(F(")"));
+      } else {
+        String mode = param;
+        if (mode == "NONE") {
+          bypassTerm = TERM_NONE;
+          Serial.println(F("OK:TERM_NONE"));
+        } else if (mode == "LF" || mode == "\\N") {
+          bypassTerm = TERM_LF;
+          Serial.println(F("OK:TERM_LF"));
+        } else if (mode == "CR" || mode == "\\R") {
+          bypassTerm = TERM_CR;
+          Serial.println(F("OK:TERM_CR"));
+        } else if (mode == "CRLF" || mode == "\\R\\N") {
+          bypassTerm = TERM_CRLF;
+          Serial.println(F("OK:TERM_CRLF"));
         } else {
-          Serial.println(F("ERR:USE_NONE_LF_CR_CRLF_or_BYTE"));
+          // Try to parse as custom byte value (hex or decimal)
+          long value = -1;
+          if (mode.startsWith("0X") || mode.startsWith("0x")) {
+            // Hex format: 0xFF or 0XFF
+            value = strtol(mode.c_str() + 2, NULL, 16);
+          } else if (mode.length() <= 2 &&
+                     ((mode[0] >= '0' && mode[0] <= '9') ||
+                      (mode[0] >= 'A' && mode[0] <= 'F') ||
+                      (mode[0] >= 'a' && mode[0] <= 'f'))) {
+            // Try hex without 0x prefix (FF, 0A, etc)
+            value = strtol(mode.c_str(), NULL, 16);
+          } else {
+            // Try decimal (255, 10, etc)
+            value = mode.toInt();
+          }
+
+          if (value >= 0 && value <= 255) {
+            bypassTerm = TERM_CUSTOM;
+            customTermByte = (uint8_t)value;
+            Serial.print(F("OK:TERM_CUSTOM_0x"));
+            if (customTermByte < 16) Serial.print(F("0"));
+            Serial.print(customTermByte, HEX);
+            Serial.print(F(" ("));
+            Serial.print(customTermByte);
+            Serial.println(F(")"));
+          } else {
+            Serial.println(F("ERR:USE_NONE_LF_CR_CRLF_or_BYTE"));
+          }
         }
       }
 
@@ -1206,16 +1530,22 @@ void help() {
   Serial.println();
   Serial.println(F("FPGA SERIAL:"));
   Serial.println(F("  >>>text - Passthrough to FPGA"));
-  Serial.println(F("  #FPGASEL <1|2|3> - Select FPGA"));
-  Serial.println(F("  #FPGA1BAUD <baud>"));
-  Serial.println(F("  #FPGA2BAUD <baud>"));
-  Serial.println(F("  #FPGA3BAUD <baud>"));
-  Serial.println(F("  #FPGA1STOP <1|2> - Hardware stop bits"));
-  Serial.println(F("  #FPGA2STOP <1|2>"));
-  Serial.println(F("  #FPGA3STOP <1|2>"));
-  Serial.println(F("  #FPGA1RX <TEXT|BINARY> - RX mode"));
-  Serial.println(F("  #FPGA2RX <TEXT|BINARY>"));
-  Serial.println(F("  #FPGA3RX <TEXT|BINARY>"));
+  Serial.println(F("  #STATUS - Show all settings"));
+  Serial.println(F("  #FPGASEL <1|2|3|?> - Select FPGA"));
+  Serial.println(F("  #FPGA1BAUD <baud|?>"));
+  Serial.println(F("  #FPGA2BAUD <baud|?>"));
+  Serial.println(F("  #FPGA3BAUD <baud|?>"));
+  Serial.println(F("  #FPGA1STOP <1|2|?> - Hardware stop bits"));
+  Serial.println(F("  #FPGA2STOP <1|2|?>"));
+  Serial.println(F("  #FPGA3STOP <1|2|?>"));
+  Serial.println(F("  #FPGA1RX <TEXT|BINARY|?> - RX mode"));
+  Serial.println(F("  #FPGA2RX <TEXT|BINARY|?>"));
+  Serial.println(F("  #FPGA3RX <TEXT|BINARY|?>"));
+  Serial.println(F("  #FPGA1PARSE <NONE|ASCII|DEC|MIXED|?>"));
+  Serial.println(F("    NONE: Hex (0x41), ASCII: 'A' or [41]"));
+  Serial.println(F("    DEC: 65, MIXED: 0x41='A'"));
+  Serial.println(F("  #FPGA2PARSE <mode|?>"));
+  Serial.println(F("  #FPGA3PARSE <mode|?>"));
   Serial.println(F("  #FPGASEND <text>"));
   Serial.println(F("  #FPGAPING"));
   Serial.println(F("  #FPGABYTES <hex>"));
@@ -1223,8 +1553,11 @@ void help() {
   Serial.println(F("    Read N bytes from FPGA"));
   Serial.println(F("  #FPGAQUERY <hex> <expect> [timeout]"));
   Serial.println(F("    Send hex, read response"));
-  Serial.println(F("  #TERM <NONE|LF|CR|CRLF|0xFF|255>"));
+  Serial.println(F("  #TERM <NONE|LF|CR|CRLF|0xFF|255|?>"));
   Serial.println(F("    (TX termination byte)"));
+  Serial.println();
+  Serial.println(F("QUERY: Add ? to most commands to query"));
+  Serial.println(F("  Example: #FPGA1BAUD ?"));
   Serial.println();
   Serial.println(F("DRAWING:"));
   Serial.println(F("  #RECT <x y w h>"));
@@ -1391,10 +1724,32 @@ void checkTouch() {
   // Check if touched
   if (p.z < MINPRESSURE || p.z > MAXPRESSURE) return;
 
-  // Map touch coordinates to screen coordinates
-  // For rotation 0: portrait mode
-  int16_t px = map(p.x, TS_MINX, TS_MAXX, 0, screenW);
-  int16_t py = map(p.y, TS_MINY, TS_MAXY, 0, screenH);
+  // Map touch coordinates to screen coordinates based on rotation
+  int16_t px, py;
+  uint8_t rotation = tft.getRotation();
+
+  switch (rotation) {
+    case 0:  // Portrait
+      px = map(p.x, TS_MINX, TS_MAXX, 0, screenW);
+      py = map(p.y, TS_MINY, TS_MAXY, 0, screenH);
+      break;
+    case 1:  // Landscape
+      px = map(p.y, TS_MINY, TS_MAXY, 0, screenW);
+      py = map(p.x, TS_MAXX, TS_MINX, 0, screenH);
+      break;
+    case 2:  // Portrait inverted
+      px = map(p.x, TS_MAXX, TS_MINX, 0, screenW);
+      py = map(p.y, TS_MAXY, TS_MINY, 0, screenH);
+      break;
+    case 3:  // Landscape inverted
+      px = map(p.y, TS_MAXY, TS_MINY, 0, screenW);
+      py = map(p.x, TS_MINX, TS_MAXX, 0, screenH);
+      break;
+    default:
+      px = map(p.x, TS_MINX, TS_MAXX, 0, screenW);
+      py = map(p.y, TS_MINY, TS_MAXY, 0, screenH);
+      break;
+  }
 
   // Check if touch is within any button
   for (uint8_t i = 0; i < NUM_BUTTONS; i++) {
@@ -1425,16 +1780,26 @@ void checkTouch() {
       Serial.print(F("] "));
       Serial.print(btn.label);
       Serial.print(F(" = "));
+
+      // Build hex string for display
+      String hexDisplay = "";
       for (uint8_t j = 0; j < btn.cmdLen; j++) {
-        if (j > 0) Serial.print(F(" "));
+        if (j > 0) {
+          Serial.print(F(" "));
+          hexDisplay += " ";
+        }
         Serial.print(F("0x"));
         if (btn.cmdBytes[j] < 16) Serial.print(F("0"));
         Serial.print(btn.cmdBytes[j], HEX);
+
+        hexDisplay += "0x";
+        if (btn.cmdBytes[j] < 16) hexDisplay += "0";
+        hexDisplay += String(btn.cmdBytes[j], HEX);
       }
       Serial.println();
 
-      // Show on bottom screen
-      String msg = String("BTN: ") + btn.label;
+      // Show on bottom screen what was SENT
+      String msg = "TX: " + hexDisplay;
       showTextBottom(msg);
 
       break;  // Only process one button per touch
