@@ -1,5 +1,5 @@
 /*
- * ILI9486/9488 Split Screen MEGA - TEXT-BASED EDITION + TOUCH BUTTONS + GPIO
+ * ILI9486/9488 Split Screen MEGA - FULL FEATURED EDITION
  * Arduino Mega 2560 + ILI9486/9488 (320x480)
  * Top=Commands, Bottom=FPGA/Serial Devices
  * Hardware Serial1/2/3 for FPGA (easier than registers!)
@@ -19,7 +19,7 @@
  *   #STATUS             - Show all current settings
  * Query any setting with ?: #FPGA1BAUD ?, #FPGA1RX ?, #TERM ?, etc.
  *
- * Touch Buttons: 4 buttons send byte arrays to FPGA
+ * Touch Buttons: 4 buttons send byte arrays to FPGA (requires touch screen)
  * - UP:    0x55 0x50 ("UP")
  * - DOWN:  0x44 0x4E ("DN")
  * - LEFT:  0x4C 0x54 ("LT")
@@ -60,11 +60,44 @@
  *   #GPIOEVENT 24 RISING - Trigger event on pin 24 rising edge
  *   #GPIOREG             - Show 8-bit register (all pins)
  *   #GPIOSET 255         - Set register to 0xFF (all HIGH)
+ *
+ * I2C System (Wire library - SDA=20, SCL=21):
+ * - Communicate with I2C devices (sensors, EEPROMs, etc.)
+ * - Full master mode support
+ * Commands:
+ *   #I2CSCAN                        - Scan I2C bus for devices (0x00-0x7F)
+ *   #I2CREAD <addr> <reg> <bytes>   - Read from I2C device
+ *   #I2CWRITE <addr> <reg> <data>   - Write to I2C register
+ *   #I2CWRITE <addr> <data...>      - Write bytes to I2C device
+ * Example: #I2CREAD 0x50 0x00 16  - Read 16 bytes from EEPROM at 0x50
+ *
+ * SPI System (Hardware SPI - MOSI=51, MISO=50, SCK=52):
+ * - Communicate with SPI devices (sensors, SD cards, displays, etc.)
+ * - Configurable CS pin, speed, and mode
+ * Commands:
+ *   #SPIBEGIN <cs_pin>              - Initialize SPI with chip select pin
+ *   #SPIEND                         - End SPI communication
+ *   #SPITRANSFER <byte...>          - Transfer bytes (shows response)
+ *   #SPISETTINGS <speed> <mode>     - Set clock (Hz) and mode (0-3)
+ * Example: #SPIBEGIN 53, #SPITRANSFER 0x9F 0x00 0x00  - Read chip ID
+ *
+ * EEPROM System (4KB internal EEPROM):
+ * - Read/Write persistent data (survives power loss)
+ * - 4096 bytes available (addresses 0-4095)
+ * Commands:
+ *   #EEPROMREAD <addr>              - Read single byte
+ *   #EEPROMWRITE <addr> <value>     - Write single byte
+ *   #EEPROMDUMP <start> <end>       - Dump address range (hex view)
+ *   #EEPROMCLEAR                    - Clear entire EEPROM (write 0xFF)
+ * Example: #EEPROMWRITE 0 42, #EEPROMREAD 0  - Store and read value
  */
 
 #include <Adafruit_GFX.h>
 #include <MCUFRIEND_kbv.h>
 #include <TouchScreen.h>
+#include <Wire.h>      // I2C library
+#include <SPI.h>       // SPI library
+#include <EEPROM.h>    // Internal EEPROM library
 
 MCUFRIEND_kbv tft;
 
@@ -215,6 +248,11 @@ GPIOEvent gpioEventQueue[GPIO_EVENT_QUEUE_SIZE];
 uint8_t gpioEventHead = 0;
 uint8_t gpioEventTail = 0;
 
+// SPI configuration
+int8_t spiCSPin = -1;             // Chip select pin (-1 = not initialized)
+uint32_t spiSpeed = 1000000;      // Default 1 MHz
+uint8_t spiMode = SPI_MODE0;      // Default mode 0
+
 void setup() {
   Serial.begin(115200);      // USB/PC
   Serial1.begin(fpga1Baud);  // FPGA1
@@ -249,6 +287,9 @@ void setup() {
 
   // Initialize GPIO system
   initGPIO();
+
+  // Initialize I2C (Wire library)
+  Wire.begin();
 
   // Startup message
   tft.setTextColor(0x07FF);  // Cyan
@@ -1228,6 +1269,42 @@ void processCmd(String c) {
         }
       }
 
+    // ========== I2C COMMANDS ==========
+    } else if (c == "#I2CSCAN") {
+      i2cScan();
+
+    } else if (c.startsWith("#I2CREAD ")) {
+      handleI2CRead(c.substring(9));
+
+    } else if (c.startsWith("#I2CWRITE ")) {
+      handleI2CWrite(c.substring(10));
+
+    // ========== SPI COMMANDS ==========
+    } else if (c.startsWith("#SPIBEGIN ")) {
+      handleSPIBegin(c.substring(10));
+
+    } else if (c == "#SPIEND") {
+      handleSPIEnd();
+
+    } else if (c.startsWith("#SPITRANSFER ")) {
+      handleSPITransfer(c.substring(13));
+
+    } else if (c.startsWith("#SPISETTINGS ")) {
+      handleSPISettings(c.substring(13));
+
+    // ========== EEPROM COMMANDS ==========
+    } else if (c.startsWith("#EEPROMREAD ")) {
+      handleEEPROMRead(c.substring(12));
+
+    } else if (c.startsWith("#EEPROMWRITE ")) {
+      handleEEPROMWrite(c.substring(13));
+
+    } else if (c.startsWith("#EEPROMDUMP ")) {
+      handleEEPROMDump(c.substring(12));
+
+    } else if (c == "#EEPROMCLEAR") {
+      handleEEPROMClear();
+
     } else if (c == "#HELP") {
       help();
 
@@ -1665,6 +1742,24 @@ void help() {
   Serial.println(F("  #GPIOREG - Show 8-bit register"));
   Serial.println(F("  #GPIOSET <0-255> - Set register"));
   Serial.println();
+  Serial.println(F("I2C (SDA=20, SCL=21):"));
+  Serial.println(F("  #I2CSCAN - Scan for I2C devices"));
+  Serial.println(F("  #I2CREAD <addr> <reg> <bytes>"));
+  Serial.println(F("  #I2CWRITE <addr> <reg> <data...>"));
+  Serial.println(F("  #I2CWRITE <addr> <data...>"));
+  Serial.println();
+  Serial.println(F("SPI (MOSI=51, MISO=50, SCK=52):"));
+  Serial.println(F("  #SPIBEGIN <cs_pin> - Init SPI"));
+  Serial.println(F("  #SPIEND - End SPI"));
+  Serial.println(F("  #SPITRANSFER <byte...>"));
+  Serial.println(F("  #SPISETTINGS <speed> <mode>"));
+  Serial.println();
+  Serial.println(F("EEPROM (4KB internal):"));
+  Serial.println(F("  #EEPROMREAD <addr>"));
+  Serial.println(F("  #EEPROMWRITE <addr> <value>"));
+  Serial.println(F("  #EEPROMDUMP <start> <end>"));
+  Serial.println(F("  #EEPROMCLEAR - Erase all"));
+  Serial.println();
   Serial.println(F("OTHER:"));
   Serial.println(F("  #CLRALL - Clear both screens"));
   Serial.println(F("  #ROT <0-3> - Rotation"));
@@ -1675,6 +1770,382 @@ void help() {
   Serial.println(F("        MAGENTA YELLOW WHITE"));
   Serial.println(F("        BLACK ORANGE PINK"));
   Serial.println(F("        PURPLE NAVY"));
+}
+
+// ========== I2C FUNCTIONS ==========
+
+void i2cScan() {
+  Serial.println(F("Scanning I2C bus (0x00-0x7F)..."));
+  uint8_t count = 0;
+
+  for (uint8_t addr = 0; addr < 128; addr++) {
+    Wire.beginTransmission(addr);
+    uint8_t error = Wire.endTransmission();
+
+    if (error == 0) {
+      Serial.print(F("  Device found at 0x"));
+      if (addr < 16) Serial.print("0");
+      Serial.println(addr, HEX);
+      count++;
+    }
+  }
+
+  if (count == 0) {
+    Serial.println(F("No I2C devices found"));
+  } else {
+    Serial.print(F("Found "));
+    Serial.print(count);
+    Serial.println(F(" device(s)"));
+  }
+}
+
+void handleI2CRead(String params) {
+  // Parse: <addr> <reg> <bytes>
+  int addr, reg, numBytes;
+  int sp1 = params.indexOf(' ');
+  int sp2 = params.indexOf(' ', sp1 + 1);
+
+  if (sp1 == -1 || sp2 == -1) {
+    Serial.println(F("ERR:FORMAT #I2CREAD <addr> <reg> <bytes>"));
+    return;
+  }
+
+  addr = parseHexOrDec(params.substring(0, sp1));
+  reg = parseHexOrDec(params.substring(sp1 + 1, sp2));
+  numBytes = params.substring(sp2 + 1).toInt();
+
+  if (addr < 0 || addr > 127 || numBytes < 1 || numBytes > 32) {
+    Serial.println(F("ERR:INVALID_PARAMS"));
+    return;
+  }
+
+  // Write register address
+  Wire.beginTransmission(addr);
+  Wire.write(reg);
+  uint8_t error = Wire.endTransmission(false); // Repeated start
+
+  if (error != 0) {
+    Serial.print(F("ERR:I2C_WRITE_FAIL:"));
+    Serial.println(error);
+    return;
+  }
+
+  // Read bytes
+  Wire.requestFrom((uint8_t)addr, (uint8_t)numBytes);
+
+  Serial.print(F("I2C[0x"));
+  if (addr < 16) Serial.print("0");
+  Serial.print(addr, HEX);
+  Serial.print(F("] Reg 0x"));
+  if (reg < 16) Serial.print("0");
+  Serial.print(reg, HEX);
+  Serial.print(F(": "));
+
+  uint8_t bytesRead = 0;
+  while (Wire.available() && bytesRead < numBytes) {
+    uint8_t b = Wire.read();
+    if (bytesRead > 0) Serial.print(F(" "));
+    Serial.print(F("0x"));
+    if (b < 16) Serial.print("0");
+    Serial.print(b, HEX);
+    bytesRead++;
+  }
+  Serial.println();
+}
+
+void handleI2CWrite(String params) {
+  // Parse: <addr> <reg> <data...> or <addr> <data...>
+  // First, parse all hex/dec numbers
+  uint8_t values[32];
+  uint8_t count = 0;
+  int lastPos = 0;
+
+  for (int i = 0; i <= params.length(); i++) {
+    if (i == params.length() || params[i] == ' ') {
+      if (i > lastPos) {
+        String token = params.substring(lastPos, i);
+        values[count++] = parseHexOrDec(token);
+        if (count >= 32) break;
+      }
+      lastPos = i + 1;
+    }
+  }
+
+  if (count < 2) {
+    Serial.println(F("ERR:FORMAT #I2CWRITE <addr> <data...>"));
+    return;
+  }
+
+  uint8_t addr = values[0];
+  if (addr > 127) {
+    Serial.println(F("ERR:INVALID_ADDR"));
+    return;
+  }
+
+  // Write to I2C
+  Wire.beginTransmission(addr);
+  for (uint8_t i = 1; i < count; i++) {
+    Wire.write(values[i]);
+  }
+  uint8_t error = Wire.endTransmission();
+
+  if (error != 0) {
+    Serial.print(F("ERR:I2C_WRITE_FAIL:"));
+    Serial.println(error);
+    return;
+  }
+
+  Serial.print(F("I2C[0x"));
+  if (addr < 16) Serial.print("0");
+  Serial.print(addr, HEX);
+  Serial.print(F("] Wrote "));
+  Serial.print(count - 1);
+  Serial.println(F(" bytes"));
+}
+
+// ========== SPI FUNCTIONS ==========
+
+void handleSPIBegin(String params) {
+  int csPin = params.toInt();
+
+  if (csPin < 0 || csPin > 53) {
+    Serial.println(F("ERR:INVALID_PIN"));
+    return;
+  }
+
+  spiCSPin = csPin;
+  pinMode(spiCSPin, OUTPUT);
+  digitalWrite(spiCSPin, HIGH);
+
+  SPI.begin();
+  SPI.beginTransaction(SPISettings(spiSpeed, MSBFIRST, spiMode));
+
+  Serial.print(F("SPI initialized, CS="));
+  Serial.println(spiCSPin);
+}
+
+void handleSPIEnd() {
+  if (spiCSPin < 0) {
+    Serial.println(F("ERR:SPI_NOT_INIT"));
+    return;
+  }
+
+  SPI.endTransaction();
+  SPI.end();
+  spiCSPin = -1;
+
+  Serial.println(F("SPI ended"));
+}
+
+void handleSPITransfer(String params) {
+  if (spiCSPin < 0) {
+    Serial.println(F("ERR:SPI_NOT_INIT (use #SPIBEGIN first)"));
+    return;
+  }
+
+  // Parse bytes
+  uint8_t txBytes[64];
+  uint8_t rxBytes[64];
+  uint8_t count = 0;
+  int lastPos = 0;
+
+  for (int i = 0; i <= params.length(); i++) {
+    if (i == params.length() || params[i] == ' ') {
+      if (i > lastPos) {
+        String token = params.substring(lastPos, i);
+        txBytes[count++] = parseHexOrDec(token);
+        if (count >= 64) break;
+      }
+      lastPos = i + 1;
+    }
+  }
+
+  if (count == 0) {
+    Serial.println(F("ERR:NO_DATA"));
+    return;
+  }
+
+  // Transfer bytes
+  digitalWrite(spiCSPin, LOW);
+  for (uint8_t i = 0; i < count; i++) {
+    rxBytes[i] = SPI.transfer(txBytes[i]);
+  }
+  digitalWrite(spiCSPin, HIGH);
+
+  // Print TX
+  Serial.print(F("SPI TX: "));
+  for (uint8_t i = 0; i < count; i++) {
+    if (i > 0) Serial.print(F(" "));
+    Serial.print(F("0x"));
+    if (txBytes[i] < 16) Serial.print("0");
+    Serial.print(txBytes[i], HEX);
+  }
+  Serial.println();
+
+  // Print RX
+  Serial.print(F("SPI RX: "));
+  for (uint8_t i = 0; i < count; i++) {
+    if (i > 0) Serial.print(F(" "));
+    Serial.print(F("0x"));
+    if (rxBytes[i] < 16) Serial.print("0");
+    Serial.print(rxBytes[i], HEX);
+  }
+  Serial.println();
+}
+
+void handleSPISettings(String params) {
+  // Parse: <speed> <mode>
+  int sp = params.indexOf(' ');
+  if (sp == -1) {
+    Serial.println(F("ERR:FORMAT #SPISETTINGS <speed> <mode>"));
+    return;
+  }
+
+  uint32_t speed = params.substring(0, sp).toInt();
+  uint8_t mode = params.substring(sp + 1).toInt();
+
+  if (speed < 100 || speed > 16000000) {
+    Serial.println(F("ERR:SPEED_RANGE (100-16000000 Hz)"));
+    return;
+  }
+
+  if (mode > 3) {
+    Serial.println(F("ERR:MODE_RANGE (0-3)"));
+    return;
+  }
+
+  spiSpeed = speed;
+  spiMode = mode;
+
+  // Update settings if SPI is active
+  if (spiCSPin >= 0) {
+    SPI.endTransaction();
+    SPI.beginTransaction(SPISettings(spiSpeed, MSBFIRST, spiMode));
+  }
+
+  Serial.print(F("SPI settings: "));
+  Serial.print(spiSpeed);
+  Serial.print(F(" Hz, Mode "));
+  Serial.println(spiMode);
+}
+
+// ========== EEPROM FUNCTIONS ==========
+
+void handleEEPROMRead(String params) {
+  int addr = parseHexOrDec(params);
+
+  if (addr < 0 || addr >= EEPROM.length()) {
+    Serial.print(F("ERR:ADDR_RANGE (0-"));
+    Serial.print(EEPROM.length() - 1);
+    Serial.println(F(")"));
+    return;
+  }
+
+  uint8_t value = EEPROM.read(addr);
+
+  Serial.print(F("EEPROM["));
+  Serial.print(addr);
+  Serial.print(F("] = 0x"));
+  if (value < 16) Serial.print("0");
+  Serial.print(value, HEX);
+  Serial.print(F(" ("));
+  Serial.print(value);
+  Serial.println(F(")"));
+}
+
+void handleEEPROMWrite(String params) {
+  int sp = params.indexOf(' ');
+  if (sp == -1) {
+    Serial.println(F("ERR:FORMAT #EEPROMWRITE <addr> <value>"));
+    return;
+  }
+
+  int addr = parseHexOrDec(params.substring(0, sp));
+  uint8_t value = parseHexOrDec(params.substring(sp + 1));
+
+  if (addr < 0 || addr >= EEPROM.length()) {
+    Serial.print(F("ERR:ADDR_RANGE (0-"));
+    Serial.print(EEPROM.length() - 1);
+    Serial.println(F(")"));
+    return;
+  }
+
+  EEPROM.write(addr, value);
+
+  Serial.print(F("EEPROM["));
+  Serial.print(addr);
+  Serial.print(F("] = 0x"));
+  if (value < 16) Serial.print("0");
+  Serial.println(value, HEX);
+}
+
+void handleEEPROMDump(String params) {
+  int sp = params.indexOf(' ');
+  if (sp == -1) {
+    Serial.println(F("ERR:FORMAT #EEPROMDUMP <start> <end>"));
+    return;
+  }
+
+  int startAddr = parseHexOrDec(params.substring(0, sp));
+  int endAddr = parseHexOrDec(params.substring(sp + 1));
+
+  if (startAddr < 0 || endAddr >= EEPROM.length() || startAddr > endAddr) {
+    Serial.println(F("ERR:INVALID_RANGE"));
+    return;
+  }
+
+  Serial.println(F("EEPROM Dump:"));
+  Serial.println(F("Addr  | 00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F"));
+  Serial.println(F("------+------------------------------------------------"));
+
+  for (int addr = startAddr; addr <= endAddr; addr += 16) {
+    // Print address
+    if (addr < 0x1000) Serial.print("0");
+    if (addr < 0x100) Serial.print("0");
+    if (addr < 0x10) Serial.print("0");
+    Serial.print(addr, HEX);
+    Serial.print(F("  | "));
+
+    // Print 16 bytes
+    for (int i = 0; i < 16; i++) {
+      int a = addr + i;
+      if (a <= endAddr) {
+        uint8_t b = EEPROM.read(a);
+        if (b < 16) Serial.print("0");
+        Serial.print(b, HEX);
+      } else {
+        Serial.print(F("  "));
+      }
+      Serial.print(F(" "));
+    }
+    Serial.println();
+  }
+}
+
+void handleEEPROMClear() {
+  Serial.print(F("Clearing EEPROM ("));
+  Serial.print(EEPROM.length());
+  Serial.println(F(" bytes)..."));
+
+  for (int i = 0; i < EEPROM.length(); i++) {
+    EEPROM.write(i, 0xFF);
+    if (i % 256 == 0) {
+      Serial.print(F("."));
+    }
+  }
+
+  Serial.println();
+  Serial.println(F("EEPROM cleared (all 0xFF)"));
+}
+
+// Helper function to parse hex (0x prefix) or decimal numbers
+int parseHexOrDec(String str) {
+  str.trim();
+  if (str.startsWith("0x") || str.startsWith("0X")) {
+    return strtol(str.c_str() + 2, NULL, 16);
+  } else {
+    return str.toInt();
+  }
 }
 
 // ========== BUTTON FUNCTIONS ==========
