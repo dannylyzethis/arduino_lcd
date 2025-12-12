@@ -1823,8 +1823,25 @@ void checkTouch() {
   digitalWrite(XM, HIGH);
   digitalWrite(YP, HIGH);
 
+  // Debug: Show raw touch data (always, to see if touch is being read)
+  Serial.print(F("[TOUCH] Raw: X="));
+  Serial.print(p.x);
+  Serial.print(F(" Y="));
+  Serial.print(p.y);
+  Serial.print(F(" Z="));
+  Serial.print(p.z);
+  Serial.print(F(" (Range: "));
+  Serial.print(MINPRESSURE);
+  Serial.print(F("-"));
+  Serial.print(MAXPRESSURE);
+  Serial.print(F(")"));
+
   // Check if touched
-  if (p.z < MINPRESSURE || p.z > MAXPRESSURE) return;
+  if (p.z < MINPRESSURE || p.z > MAXPRESSURE) {
+    Serial.println(F(" - NO TOUCH"));
+    return;
+  }
+  Serial.println(F(" - TOUCH DETECTED!"));
 
   // Touch test mode - show raw coordinates
   if (touchTestMode) {
@@ -1898,19 +1915,46 @@ void checkTouch() {
       break;
   }
 
-  // Debug: Show mapped touch coordinates (helpful for troubleshooting)
+  // Debug: Show mapped touch coordinates and calibration
   Serial.print(F("[TOUCH] Mapped: X="));
   Serial.print(px);
   Serial.print(F(" Y="));
   Serial.print(py);
   Serial.print(F(" | Rot="));
-  Serial.println(rotation);
+  Serial.print(rotation);
+  Serial.print(F(" | Cal: X["));
+  Serial.print(TS_MINX);
+  Serial.print(F("-"));
+  Serial.print(TS_MAXX);
+  Serial.print(F("] Y["));
+  Serial.print(TS_MINY);
+  Serial.print(F("-"));
+  Serial.print(TS_MAXY);
+  Serial.println(F("]"));
 
   // Check if touch is within any button
+  bool buttonHit = false;
   for (uint8_t i = 0; i < NUM_BUTTONS; i++) {
     Button &btn = buttons[i];
+
+    // Debug: Show button check
+    Serial.print(F("  Checking BTN"));
+    Serial.print(i);
+    Serial.print(F(" ["));
+    Serial.print(btn.label);
+    Serial.print(F("]: X="));
+    Serial.print(btn.x);
+    Serial.print(F("-"));
+    Serial.print(btn.x + btn.w);
+    Serial.print(F(", Y="));
+    Serial.print(btn.y);
+    Serial.print(F("-"));
+    Serial.print(btn.y + btn.h);
+
     if (px >= btn.x && px < (btn.x + btn.w) &&
         py >= btn.y && py < (btn.y + btn.h)) {
+      Serial.println(F(" --> HIT!"));
+      buttonHit = true;
 
       // Button pressed!
       lastTouch = now;
@@ -1958,7 +2002,13 @@ void checkTouch() {
       showTextBottom(msg);
 
       break;  // Only process one button per touch
+    } else {
+      Serial.println(F(" - miss"));
     }
+  }
+
+  if (!buttonHit) {
+    Serial.println(F("[TOUCH] No button was hit at these coordinates"));
   }
 }
 
