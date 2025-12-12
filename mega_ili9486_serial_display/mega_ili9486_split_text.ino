@@ -271,7 +271,13 @@ uint8_t spiMode = SPI_MODE0;      // Default mode 0
 // Analog input configuration
 const uint8_t analogPins[8] = {A8, A9, A10, A11, A12, A13, A14, A15};
 uint8_t analogAvgSamples = 1;     // Number of samples to average (1-16)
-uint8_t analogRefMode = DEFAULT;  // Voltage reference mode
+
+// Analog reference mode tracking (using our own enum to avoid conflicts)
+enum AnalogRefMode {
+  AREF_DEFAULT = 0,
+  AREF_INTERNAL = 1
+};
+AnalogRefMode analogRefMode = AREF_DEFAULT;  // Default to 5V reference
 
 void setup() {
   Serial.begin(115200);      // USB/PC
@@ -2221,10 +2227,10 @@ void handleAnalogRead(String params) {
 
   // Calculate voltage based on reference
   float voltage;
-  if (analogRefMode == INTERNAL) {
+  if (analogRefMode == AREF_INTERNAL) {
     voltage = (value * 1.1) / 1023.0;  // 1.1V internal reference
   } else {
-    voltage = (value * 5.0) / 1023.0;  // DEFAULT = 5V
+    voltage = (value * 5.0) / 1023.0;  // AREF_DEFAULT = 5V
   }
 
   // Print result
@@ -2249,7 +2255,7 @@ void handleAnalogReadAll() {
   // Determine voltage reference string
   const char* refStr;
   float refVoltage;
-  if (analogRefMode == INTERNAL) {
+  if (analogRefMode == AREF_INTERNAL) {
     refStr = "INTERNAL";
     refVoltage = 1.1;
   } else {
@@ -2301,7 +2307,7 @@ void handleAnalogRef(String params) {
   if (params == "?") {
     // Query current reference
     Serial.print(F("ANALOGREF="));
-    if (analogRefMode == INTERNAL) {
+    if (analogRefMode == AREF_INTERNAL) {
       Serial.println(F("INTERNAL (1.1V)"));
     } else {
       Serial.println(F("DEFAULT (5V)"));
@@ -2311,11 +2317,11 @@ void handleAnalogRef(String params) {
 
   // Set reference
   if (params == "DEFAULT") {
-    analogRefMode = DEFAULT;
+    analogRefMode = AREF_DEFAULT;
     analogReference(DEFAULT);
     Serial.println(F("Analog reference: DEFAULT (5V)"));
   } else if (params == "INTERNAL") {
-    analogRefMode = INTERNAL;
+    analogRefMode = AREF_INTERNAL;
     analogReference(INTERNAL1V1);  // Mega uses INTERNAL1V1
     Serial.println(F("Analog reference: INTERNAL (1.1V)"));
     Serial.println(F("WARNING: Max input 1.1V!"));
