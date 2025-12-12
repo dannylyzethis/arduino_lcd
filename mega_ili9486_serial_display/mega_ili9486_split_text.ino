@@ -1685,7 +1685,7 @@ void initButtons() {
   // Reserve bottom 50 pixels for buttons (larger for 480px height)
   uint16_t btnHeight = 45;
   uint16_t btnWidth = (screenW - 15) / 4;  // 4 buttons with small gaps
-  uint16_t btnY = bottomMaxY - btnHeight - 2;
+  uint16_t btnY = screenH - btnHeight - 2;  // Use screenH, not bottomMaxY!
   buttonTextY = btnY - 2;  // Text area ends just above buttons
 
   // UP button - sends bytes: 0x55 0x50 ("UP")
@@ -1775,6 +1775,23 @@ void showButtons() {
 
   buttonsVisible = true;
   drawDivider();
+
+  // Debug: Show button positions for troubleshooting
+  Serial.println(F("=== BUTTONS VISIBLE ==="));
+  for (uint8_t i = 0; i < NUM_BUTTONS; i++) {
+    Serial.print(F("BTN"));
+    Serial.print(i);
+    Serial.print(F(" ["));
+    Serial.print(buttons[i].label);
+    Serial.print(F("]: X="));
+    Serial.print(buttons[i].x);
+    Serial.print(F("-"));
+    Serial.print(buttons[i].x + buttons[i].w);
+    Serial.print(F(", Y="));
+    Serial.print(buttons[i].y);
+    Serial.print(F("-"));
+    Serial.println(buttons[i].y + buttons[i].h);
+  }
 }
 
 // Hide buttons
@@ -1803,6 +1820,8 @@ void checkTouch() {
   // Restore pins for LCD operation (touchscreen library changes pin modes)
   pinMode(XM, OUTPUT);
   pinMode(YP, OUTPUT);
+  digitalWrite(XM, HIGH);
+  digitalWrite(YP, HIGH);
 
   // Check if touched
   if (p.z < MINPRESSURE || p.z > MAXPRESSURE) return;
@@ -1878,6 +1897,14 @@ void checkTouch() {
       py = map(p.y, TS_MINY, TS_MAXY, 0, screenH);
       break;
   }
+
+  // Debug: Show mapped touch coordinates (helpful for troubleshooting)
+  Serial.print(F("[TOUCH] Mapped: X="));
+  Serial.print(px);
+  Serial.print(F(" Y="));
+  Serial.print(py);
+  Serial.print(F(" | Rot="));
+  Serial.println(rotation);
 
   // Check if touch is within any button
   for (uint8_t i = 0; i < NUM_BUTTONS; i++) {
