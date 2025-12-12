@@ -1434,6 +1434,439 @@ Device ID:            #ID                  Show device info
 
 ---
 
+## Display Widgets
+
+### Overview
+Advanced visualization widgets for creating dynamic dashboards and monitoring interfaces.
+
+### Widget Commands
+
+#### Circular Gauge
+```
+#GAUGE <x> <y> <radius> <value> <max>    Draw analog-style gauge
+```
+
+**Parameters:**
+- `x`, `y` - Center position of gauge
+- `radius` - Radius in pixels
+- `value` - Current value to display
+- `max` - Maximum value (full scale)
+
+**Examples:**
+```
+#GAUGE 100 100 60 75 100        75% gauge at (100,100), radius 60
+#GAUGE 160 150 80 3500 5000     RPM gauge
+#COLOR GREEN
+#GAUGE 80 120 50 45 100         Green 45% gauge
+```
+
+**Visual Features:**
+- 270° sweep (bottom-left to bottom-right)
+- Tick marks every 30°
+- Red needle pointer
+- Value displayed at bottom
+
+#### Bar Graph
+```
+#BARGRAPH <x> <y> <w> <h> <val1> <val2> ...    Draw multi-bar graph
+```
+
+**Parameters:**
+- `x`, `y` - Top-left corner
+- `w`, `h` - Width and height
+- `val1, val2, ...` - Values for each bar (up to 16 bars)
+
+**Examples:**
+```
+#BARGRAPH 10 50 300 100 25 50 75 100      4 bars
+#BARGRAPH 10 50 300 150 10 20 15 25 30    5 bars showing trend
+```
+
+**Visual Features:**
+- Auto-scaling to maximum value
+- Multi-color bars (green, cyan, yellow pattern)
+- Bordered box
+- Bars drawn from bottom up
+
+#### Large Numeric Display
+```
+#NUMBOX <x> <y> <value>    Display large number
+```
+
+**Parameters:**
+- `x`, `y` - Top-left corner
+- `value` - Number or text to display (can include decimals, units)
+
+**Examples:**
+```
+#NUMBOX 50 100 25.6           Display "25.6"
+#NUMBOX 10 50 3.14V           Display "3.14V"
+#COLOR RED
+#NUMBOX 100 200 ERROR         Display "ERROR" in red
+```
+
+**Visual Features:**
+- Extra-large text (4x size)
+- Uses current text color
+- Supports any text/numbers
+
+#### Trend/Line Graph
+```
+#TREND <x> <y> <w> <h> <val1> <val2> ...    Draw line graph
+```
+
+**Parameters:**
+- `x`, `y` - Top-left corner
+- `w`, `h` - Width and height
+- `val1, val2, ...` - Data points to plot (up to 46 points)
+
+**Examples:**
+```
+#TREND 10 100 300 150 10 15 12 18 22 25 20      Plot 7 points
+#TREND 10 50 300 100 100 105 103 108 112 110    Temperature trend
+```
+
+**Visual Features:**
+- Auto-scaling to min/max values
+- Center reference line (gray)
+- Connected line plot
+- Data point markers (circles)
+- Bordered box
+
+### Widget Usage Examples
+
+#### Real-Time Dashboard
+```
+#CLR
+#COLOR WHITE
+#NUMBOX 10 10 98.6F          Temperature reading
+#COLOR CYAN
+#GAUGE 200 80 60 45 100      CPU usage gauge
+#COLOR GREEN
+#BARGRAPH 10 180 300 100 50 60 55 70 65    5-minute load average
+```
+
+#### Sensor Monitoring
+```
+#ANALOGREADALL                Read all sensors
+#COLOR YELLOW
+#TREND 10 10 300 150 512 520 518 525 530    Plot A8 history
+#COLOR WHITE
+#NUMBOX 50 200 2.55V         Display voltage
+```
+
+---
+
+## Data Logging System
+
+### Overview
+Automatic data logging to internal EEPROM with circular buffer management. Stores timestamped sensor readings or GPIO states for later analysis.
+
+### EEPROM Memory Map
+- **Addresses 0-99:** Reserved for configuration
+- **Addresses 100-4095:** Log data (circular buffer)
+- **Log Entry Size:** 8 bytes per entry
+- **Maximum Entries:** ~499 entries
+
+### Log Entry Format
+Each entry contains:
+- **Timestamp** (4 bytes) - milliseconds since startup
+- **Value** (2 bytes) - sensor reading or GPIO state
+- **Source** (1 byte) - data source identifier
+- **Flags** (1 byte) - reserved for future use
+
+### Data Sources
+| Source ID | Description |
+|-----------|-------------|
+| 0-7       | Analog pins A8-A15 |
+| 15        | GPIO register (all 8 pins) |
+
+### Logging Commands
+
+#### Start Logging
+```
+#LOGSTART <interval> [source]    Start data logging
+```
+
+**Parameters:**
+- `interval` - Time between samples in milliseconds (minimum 10ms)
+- `source` - Data source to log (0-7 for A8-A15, 15 for GPIO)
+
+**Examples:**
+```
+#LOGSTART 1000 0         Log A8 every 1 second
+#LOGSTART 500 2          Log A10 every 500ms
+#LOGSTART 100 15         Log GPIO register every 100ms
+#LOGSTART 2000           Use previous source, 2 second interval
+```
+
+**Response:** `LOG_START: <interval>ms, source=<source>`
+
+#### Stop Logging
+```
+#LOGSTOP                 Stop data logging
+```
+
+**Response:**
+```
+LOG_STOPPED
+Entries logged: 145
+```
+
+#### Read Log Data
+```
+#LOGREAD [count]         Read log entries
+```
+
+**Parameters:**
+- `count` - Number of entries to display (default 10)
+
+**Example Output:**
+```
+=== LOG DATA (10 entries) ===
+Time(ms)   Value  Source
+1234       512    A8
+2234       518    A8
+3234       520    A8
+4234       515    A8
+...
+```
+
+#### Clear Log
+```
+#LOGCLEAR                Erase all logged data
+```
+
+**Response:** `LOG_CLEARED`
+
+#### Configure Source
+```
+#LOGCONFIG <source>      Set data source without starting
+```
+
+**Examples:**
+```
+#LOGCONFIG 0             Set to log A8
+#LOGCONFIG 15            Set to log GPIO register
+```
+
+#### Check Status
+```
+#LOGSTATUS               Display logging status
+```
+
+**Example Output:**
+```
+=== LOG STATUS ===
+Active: YES
+Interval: 1000ms
+Source: A8
+Entries: 145
+Next addr: 0x05B4
+```
+
+### Logging Usage Examples
+
+#### Temperature Data Logger
+```
+#ANALOGREF DEFAULT       Use 5V reference
+#ANALOGAVG 4             Average 4 samples
+#LOGCONFIG 0             Set to log A8
+#LOGSTART 5000 0         Log every 5 seconds
+... wait ...
+#LOGSTOP                 Stop logging
+#LOGREAD 20              View last 20 readings
+```
+
+#### GPIO Event Logger
+```
+#GPIOMODE 22 INPU        Configure input with pullup
+#LOGSTART 100 15         Log GPIO state every 100ms
+... activity occurs ...
+#LOGSTOP
+#LOGREAD 50              View GPIO state changes
+```
+
+#### Continuous Monitoring
+```
+#LOGSTART 60000 1        Log A9 every minute
+... runs indefinitely ...
+#LOGSTATUS               Check status anytime
+#LOGREAD                 View recent 10 entries
+```
+
+### Important Notes
+- **Circular Buffer:** When full, oldest data is overwritten
+- **Power Loss:** Data persists in EEPROM after power cycle
+- **EEPROM Wear:** 100,000 write cycles per byte - consider interval vs. lifetime
+- **Background Operation:** Logging continues during other operations
+- **Timestamp:** Uses millis() - resets on power cycle
+
+---
+
+## Waveform Generator (PWM)
+
+### Overview
+Generate analog waveforms using PWM (Pulse Width Modulation) for testing, signal simulation, and control applications.
+
+### PWM Pin Support
+**Arduino Mega 2560 PWM Pins:**
+- **2-13** (12 pins)
+- **44-46** (3 pins)
+
+**Total:** 15 PWM-capable pins
+
+### Waveform Types
+
+#### Square Wave
+- 50% duty cycle
+- Clean digital transitions
+- Ideal for clock signals, digital testing
+
+#### Triangle Wave
+- Linear rise and fall
+- Smooth transitions
+- Good for sweep testing, motor ramping
+
+#### Sine Wave
+- Smooth sinusoidal output (32-step LUT approximation)
+- Low harmonic distortion
+- Ideal for audio, sensor testing
+
+### Waveform Commands
+
+#### Generate Waveform
+```
+#WAVEGEN <pin> <type> <freq>    Start waveform generation
+```
+
+**Parameters:**
+- `pin` - PWM pin number (2-13, 44-46)
+- `type` - Waveform type: `SQUARE`, `TRIANGLE` (or `TRI`), `SINE` (or `SIN`), or numeric (0/1/2)
+- `freq` - Frequency in Hz (1-10000)
+
+**Examples:**
+```
+#WAVEGEN 3 SQUARE 1000          1kHz square wave on pin 3
+#WAVEGEN 5 SINE 440             440Hz sine wave (A4 note)
+#WAVEGEN 6 TRIANGLE 100         100Hz triangle wave
+#WAVEGEN 9 TRI 2000             2kHz triangle wave
+#WAVEGEN 11 0 5000              5kHz square (type 0)
+```
+
+**Response:**
+```
+WAVE_START: Pin=3, Type=SQUARE, Freq=1000Hz
+```
+
+**Error Messages:**
+```
+ERR:PIN_NO_PWM                  Pin doesn't support PWM
+PWM pins: 2-13, 44-46           Valid pins listed
+ERR:FORMAT #WAVEGEN...          Invalid command format
+```
+
+#### Stop Waveform
+```
+#WAVESTOP                       Stop waveform generation
+```
+
+**Response:** `WAVE_STOPPED`
+
+**Note:** Sets output pin to LOW (0V)
+
+### Waveform Specifications
+
+#### Frequency Range
+- **Minimum:** 1 Hz
+- **Maximum:** 10,000 Hz (10 kHz)
+- **Resolution:** 1 Hz steps
+
+#### Output Voltage
+- **Logic High:** 5V (typical)
+- **Logic Low:** 0V
+- **PWM Resolution:** 8-bit (256 steps)
+
+#### Waveform Accuracy
+- **Square:** Exact 50% duty cycle
+- **Triangle:** 256-step linear approximation
+- **Sine:** 32-point lookup table (good quality)
+
+### Waveform Usage Examples
+
+#### Audio Tone Generation
+```
+#WAVEGEN 3 SINE 440         A4 note (440 Hz)
+#WAVEGEN 3 SINE 523         C5 note
+#WAVEGEN 3 SINE 880         A5 note
+#WAVESTOP                   Silence
+```
+
+**Note:** Add low-pass filter and amplifier for speaker output
+
+#### Function Generator
+```
+#WAVEGEN 5 SQUARE 1000      1kHz square wave
+... test circuit ...
+#WAVEGEN 5 TRIANGLE 1000    Switch to triangle
+... test circuit ...
+#WAVEGEN 5 SINE 1000        Switch to sine
+... test circuit ...
+#WAVESTOP                   Done
+```
+
+#### Motor Speed Control
+```
+#WAVEGEN 6 TRIANGLE 10      Slow ramp (10 Hz)
+... motor ramps slowly ...
+#WAVEGEN 6 SQUARE 100       Faster switching (100 Hz)
+... motor runs faster ...
+#WAVESTOP                   Stop motor
+```
+
+#### Clock Signal
+```
+#WAVEGEN 2 SQUARE 4000      4kHz clock signal
+... runs continuously ...
+#WAVESTOP                   Stop clock
+```
+
+### PWM Filtering
+
+For analog output, add RC low-pass filter:
+
+```
+Arduino Pin ----[R]----+---- Output
+                       |
+                      [C]
+                       |
+                      GND
+
+Recommended values:
+R = 1kΩ
+C = 10µF (cutoff ≈ 16Hz)
+```
+
+### Important Notes
+- **One Waveform at a Time:** Stop current waveform before starting new one on different pin
+- **Pin Conflicts:** Don't use PWM pins already in use (LCD uses pins 8, 9)
+- **Load Current:** Maximum 40mA per pin - use transistor/MOSFET for higher loads
+- **Background Operation:** Waveform continues during other operations
+- **Frequency Limits:** Very high frequencies (>5kHz) may have reduced accuracy
+
+### Common Applications
+
+| Application | Type | Frequency | Notes |
+|------------|------|-----------|-------|
+| LED dimming | Square | 500-2000 Hz | Flicker-free |
+| Servo control | Square | 50 Hz | Need specific pulse width |
+| Audio test | Sine | 20-20000 Hz | Add filter |
+| Motor control | Triangle | 10-100 Hz | Smooth acceleration |
+| Clock signal | Square | 1-10000 Hz | Digital logic |
+| Signal simulation | Any | Variable | Testing sensors |
+
+---
+
 ## Support and Documentation
 
 ### Getting Help
@@ -1442,9 +1875,10 @@ Device ID:            #ID                  Show device info
 - Send `#ID` for device identification
 
 ### Version Information
-- **Firmware:** MEGA Split Screen ILI9486
-- **Features:** Split display, FPGA serial, I2C, SPI, EEPROM, Analog, GPIO, Touch
+- **Firmware:** MEGA Split Screen ILI9486 v2.0
+- **Features:** Split display, FPGA serial, I2C, SPI, EEPROM, Analog, GPIO, Touch, Widgets, Data Logging, Waveform Gen
 - **Command Set:** Text-based serial protocol
+- **New in v2.0:** Display widgets, Data logging system, PWM waveform generator
 
 ### Notes
 - All commands start with `#` except plain text and FPGA passthrough (`>>>`)

@@ -279,6 +279,38 @@ enum AnalogRefMode {
 };
 AnalogRefMode analogRefMode = AREF_DEFAULT;  // Default to 5V reference
 
+// ========== DATA LOGGING SYSTEM ==========
+// Data logging to EEPROM with circular buffer
+// EEPROM layout: [0-99] = config/reserved, [100-4095] = log data
+#define LOG_START_ADDR 100
+#define LOG_END_ADDR 4095
+#define LOG_ENTRY_SIZE 8  // Timestamp(4) + Value(2) + Source(1) + Flags(1)
+
+bool loggingActive = false;
+unsigned long logInterval = 1000;  // milliseconds
+unsigned long lastLogTime = 0;
+uint16_t logWriteAddr = LOG_START_ADDR;
+uint16_t logEntryCount = 0;
+uint8_t logSource = 0;  // 0=A8, 1=A9, ... 15=GPIO_REG
+
+// ========== WAVEFORM GENERATOR ==========
+// PWM-based waveform generation
+int8_t wavePin = -1;          // Pin for wave output (-1 = disabled)
+uint8_t waveType = 0;         // 0=square, 1=triangle, 2=sine
+uint16_t waveFreq = 1000;     // Hz
+uint8_t waveDuty = 128;       // 0-255 for PWM
+bool waveActive = false;
+unsigned long waveLastUpdate = 0;
+uint8_t wavePhase = 0;
+
+// Sine lookup table (32 values for memory efficiency)
+const uint8_t PROGMEM sineLUT[32] = {
+  128, 152, 176, 198, 217, 233, 245, 253,
+  255, 253, 245, 233, 217, 198, 176, 152,
+  128, 103,  79,  57,  38,  22,  10,   2,
+    0,   2,  10,  22,  38,  57,  79, 103
+};
+
 void setup() {
   Serial.begin(115200);      // USB/PC
   Serial1.begin(fpga1Baud);  // FPGA1
@@ -354,6 +386,16 @@ void loop() {
 
   // Process GPIO events
   processGPIOEvents();
+
+  // Handle data logging
+  if (loggingActive) {
+    updateDataLogger();
+  }
+
+  // Handle waveform generation
+  if (waveActive) {
+    updateWaveform();
+  }
 
   if (cmdReady) {
     processCmd(cmd);
@@ -1344,6 +1386,45 @@ void processCmd(String c) {
     } else if (c.startsWith("#ANALOGAVG ")) {
       handleAnalogAvg(c.substring(11));
 
+    } else if (c.startsWith("#GAUGE ")) {
+      handleGauge(c.substring(7));
+
+    } else if (c.startsWith("#BARGRAPH ")) {
+      handleBarGraph(c.substring(10));
+
+    } else if (c.startsWith("#NUMBOX ")) {
+      handleNumBox(c.substring(8));
+
+    } else if (c.startsWith("#TREND ")) {
+      handleTrend(c.substring(7));
+
+    } else if (c.startsWith("#LOGSTART ")) {
+      handleLogStart(c.substring(10));
+
+    } else if (c == "#LOGSTOP") {
+      handleLogStop();
+
+    } else if (c.startsWith("#LOGREAD ")) {
+      handleLogRead(c.substring(9));
+
+    } else if (c == "#LOGREAD") {
+      handleLogRead("");
+
+    } else if (c == "#LOGCLEAR") {
+      handleLogClear();
+
+    } else if (c.startsWith("#LOGCONFIG ")) {
+      handleLogConfig(c.substring(11));
+
+    } else if (c == "#LOGSTATUS") {
+      handleLogStatus();
+
+    } else if (c.startsWith("#WAVEGEN ")) {
+      handleWaveGen(c.substring(9));
+
+    } else if (c == "#WAVESTOP") {
+      handleWaveStop();
+
     } else if (c == "#HELP") {
       help();
 
@@ -1805,6 +1886,28 @@ void help() {
   Serial.println(F("  #ANALOGREF <DEFAULT|INTERNAL>"));
   Serial.println(F("  #ANALOGAVG <1-16> - Set averaging"));
   Serial.println(F("  Note: EXTERNAL ref N/A (AREF used by LCD)"));
+  Serial.println();
+  Serial.println(F("DISPLAY WIDGETS:"));
+  Serial.println(F("  #GAUGE <x y r val max>"));
+  Serial.println(F("  #BARGRAPH <x y w h val1 val2...>"));
+  Serial.println(F("  #NUMBOX <x y value>"));
+  Serial.println(F("  #TREND <x y w h val1 val2...>"));
+  Serial.println();
+  Serial.println(F("DATA LOGGING (EEPROM):"));
+  Serial.println(F("  #LOGSTART <ms> [source]"));
+  Serial.println(F("  #LOGSTOP - Stop logging"));
+  Serial.println(F("  #LOGREAD [count] - Read entries"));
+  Serial.println(F("  #LOGCLEAR - Clear log"));
+  Serial.println(F("  #LOGSTATUS - Show log status"));
+  Serial.println(F("  #LOGCONFIG <source> - Set source"));
+  Serial.println(F("    source: 0-7=A8-A15, 15=GPIO"));
+  Serial.println();
+  Serial.println(F("WAVEFORM GENERATOR (PWM):"));
+  Serial.println(F("  #WAVEGEN <pin> <type> <freq>"));
+  Serial.println(F("    type: SQUARE, TRIANGLE, SINE"));
+  Serial.println(F("    freq: 1-10000 Hz"));
+  Serial.println(F("    PWM pins: 2-13, 44-46"));
+  Serial.println(F("  #WAVESTOP - Stop waveform"));
   Serial.println();
   Serial.println(F("OTHER:"));
   Serial.println(F("  #CLRALL - Clear both screens"));
@@ -2971,4 +3074,550 @@ void setGPIORegister(uint8_t regVal) {
   Serial.print(F("OK:GPIOSET=0x"));
   if (regVal < 16) Serial.print(F("0"));
   Serial.println(regVal, HEX);
+}
+
+// ========== DISPLAY WIDGET FUNCTIONS ==========
+
+// Draw circular gauge: #GAUGE <x> <y> <radius> <value> <max>
+void handleGauge(String params) {
+  int vals[5];
+  int count = 0;
+  int lastPos = 0;
+
+  for (int i = 0; i <= params.length() && count < 5; i++) {
+    if (i == params.length() || params[i] == ' ') {
+      if (i > lastPos) {
+        vals[count++] = params.substring(lastPos, i).toInt();
+      }
+      lastPos = i + 1;
+    }
+  }
+
+  if (count < 4) {
+    Serial.println(F("ERR:FORMAT #GAUGE <x> <y> <r> <val> [max]"));
+    return;
+  }
+
+  int16_t cx = vals[0];
+  int16_t cy = vals[1];
+  int16_t r = vals[2];
+  int16_t value = vals[3];
+  int16_t maxVal = (count >= 5) ? vals[4] : 100;
+
+  // Constrain value
+  value = constrain(value, 0, maxVal);
+
+  // Draw gauge background (arc from 135° to 45° = 270° total)
+  // Draw outer circle
+  tft.drawCircle(cx, cy, r, topTextColor);
+  tft.drawCircle(cx, cy, r - 1, topTextColor);
+
+  // Calculate angle (135° to 45°, clockwise)
+  // 135° = bottom-left, 45° = bottom-right
+  // Map value to angle
+  int angle = map(value, 0, maxVal, 135, 405);  // 405 = 45 + 360
+  if (angle >= 360) angle -= 360;
+
+  // Draw tick marks (every 30°)
+  for (int a = 135; a <= 405; a += 30) {
+    int actualAngle = a >= 360 ? a - 360 : a;
+    float rad = actualAngle * PI / 180.0;
+    int16_t x1 = cx + (r - 5) * cos(rad);
+    int16_t y1 = cy + (r - 5) * sin(rad);
+    int16_t x2 = cx + r * cos(rad);
+    int16_t y2 = cy + r * sin(rad);
+    tft.drawLine(x1, y1, x2, y2, topTextColor);
+  }
+
+  // Draw needle
+  float rad = angle * PI / 180.0;
+  int16_t needleX = cx + (r - 10) * cos(rad);
+  int16_t needleY = cy + (r - 10) * sin(rad);
+  tft.drawLine(cx, cy, needleX, needleY, 0xF800);  // Red needle
+  tft.fillCircle(cx, cy, 3, 0xF800);  // Red center
+
+  // Draw value text
+  tft.setTextSize(1);
+  tft.setTextColor(topTextColor);
+  tft.setCursor(cx - 12, cy + r - 15);
+  tft.print(value);
+
+  Serial.print(F("OK:GAUGE "));
+  Serial.print(value);
+  Serial.print(F("/"));
+  Serial.println(maxVal);
+}
+
+// Draw bar graph: #BARGRAPH <x> <y> <w> <h> <val1> <val2> ...
+void handleBarGraph(String params) {
+  int vals[20];
+  int count = 0;
+  int lastPos = 0;
+
+  for (int i = 0; i <= params.length() && count < 20; i++) {
+    if (i == params.length() || params[i] == ' ') {
+      if (i > lastPos) {
+        vals[count++] = params.substring(lastPos, i).toInt();
+      }
+      lastPos = i + 1;
+    }
+  }
+
+  if (count < 5) {
+    Serial.println(F("ERR:FORMAT #BARGRAPH <x> <y> <w> <h> <val1> ..."));
+    return;
+  }
+
+  int16_t x = vals[0];
+  int16_t y = vals[1];
+  int16_t w = vals[2];
+  int16_t h = vals[3];
+  int numBars = count - 4;
+
+  // Find max value for scaling
+  int maxVal = 0;
+  for (int i = 0; i < numBars; i++) {
+    if (vals[4 + i] > maxVal) maxVal = vals[4 + i];
+  }
+  if (maxVal == 0) maxVal = 100;
+
+  // Draw border
+  tft.drawRect(x, y, w, h, topTextColor);
+
+  // Calculate bar width
+  int barWidth = (w - (numBars + 1) * 2) / numBars;
+  if (barWidth < 1) barWidth = 1;
+
+  // Draw bars
+  for (int i = 0; i < numBars; i++) {
+    int barX = x + 2 + i * (barWidth + 2);
+    int value = vals[4 + i];
+    int barHeight = map(value, 0, maxVal, 0, h - 4);
+
+    // Draw bar from bottom up
+    uint16_t barColor = (i % 3 == 0) ? 0x07E0 : (i % 3 == 1) ? 0x07FF : 0xFFE0;
+    tft.fillRect(barX, y + h - 2 - barHeight, barWidth, barHeight, barColor);
+  }
+
+  Serial.print(F("OK:BARGRAPH "));
+  Serial.print(numBars);
+  Serial.println(F(" bars"));
+}
+
+// Draw large numeric display: #NUMBOX <x> <y> <value> [decimals]
+void handleNumBox(String params) {
+  int vals[4];
+  int count = 0;
+  int lastPos = 0;
+  String valStr = "";
+
+  // Parse parameters
+  for (int i = 0; i <= params.length() && count < 2; i++) {
+    if (i == params.length() || params[i] == ' ') {
+      if (i > lastPos) {
+        if (count == 0) vals[count++] = params.substring(lastPos, i).toInt();  // x
+        else if (count == 1) vals[count++] = params.substring(lastPos, i).toInt();  // y
+      }
+      lastPos = i + 1;
+    }
+  }
+
+  if (count < 2) {
+    Serial.println(F("ERR:FORMAT #NUMBOX <x> <y> <value> [decimals]"));
+    return;
+  }
+
+  // Get value string (rest of params)
+  valStr = params.substring(lastPos);
+  valStr.trim();
+
+  int16_t x = vals[0];
+  int16_t y = vals[1];
+
+  // Draw large number
+  tft.setTextSize(4);
+  tft.setTextColor(topTextColor, topBgColor);
+  tft.setCursor(x, y);
+  tft.print(valStr);
+
+  Serial.print(F("OK:NUMBOX "));
+  Serial.println(valStr);
+}
+
+// Draw trend/line graph: #TREND <x> <y> <w> <h> <val1> <val2> ...
+void handleTrend(String params) {
+  int vals[50];
+  int count = 0;
+  int lastPos = 0;
+
+  for (int i = 0; i <= params.length() && count < 50; i++) {
+    if (i == params.length() || params[i] == ' ') {
+      if (i > lastPos) {
+        vals[count++] = params.substring(lastPos, i).toInt();
+      }
+      lastPos = i + 1;
+    }
+  }
+
+  if (count < 6) {
+    Serial.println(F("ERR:FORMAT #TREND <x> <y> <w> <h> <val1> <val2> ..."));
+    return;
+  }
+
+  int16_t x = vals[0];
+  int16_t y = vals[1];
+  int16_t w = vals[2];
+  int16_t h = vals[3];
+  int numPoints = count - 4;
+
+  // Find min/max for scaling
+  int minVal = vals[4];
+  int maxVal = vals[4];
+  for (int i = 1; i < numPoints; i++) {
+    if (vals[4 + i] < minVal) minVal = vals[4 + i];
+    if (vals[4 + i] > maxVal) maxVal = vals[4 + i];
+  }
+  if (maxVal == minVal) maxVal = minVal + 1;
+
+  // Draw border and grid
+  tft.drawRect(x, y, w, h, topTextColor);
+
+  // Draw center line
+  tft.drawLine(x, y + h / 2, x + w, y + h / 2, 0x39E7);  // Gray
+
+  // Plot points
+  int xStep = (w - 4) / (numPoints - 1);
+  for (int i = 0; i < numPoints - 1; i++) {
+    int x1 = x + 2 + i * xStep;
+    int y1 = y + 2 + map(vals[4 + i], minVal, maxVal, h - 4, 0);
+    int x2 = x + 2 + (i + 1) * xStep;
+    int y2 = y + 2 + map(vals[4 + i + 1], minVal, maxVal, h - 4, 0);
+
+    tft.drawLine(x1, y1, x2, y2, topTextColor);
+    tft.fillCircle(x1, y1, 2, topTextColor);  // Data point marker
+  }
+
+  // Draw last point
+  int xLast = x + 2 + (numPoints - 1) * xStep;
+  int yLast = y + 2 + map(vals[4 + numPoints - 1], minVal, maxVal, h - 4, 0);
+  tft.fillCircle(xLast, yLast, 2, topTextColor);
+
+  Serial.print(F("OK:TREND "));
+  Serial.print(numPoints);
+  Serial.println(F(" points"));
+}
+
+// ========== DATA LOGGING FUNCTIONS ==========
+
+void updateDataLogger() {
+  unsigned long now = millis();
+
+  if (now - lastLogTime >= logInterval) {
+    lastLogTime = now;
+
+    // Read value based on source
+    uint16_t value = 0;
+    if (logSource <= 7) {
+      // Analog pin A8-A15
+      value = analogRead(analogPins[logSource]);
+    } else if (logSource == 15) {
+      // GPIO register
+      value = 0;
+      for (uint8_t i = 0; i < NUM_GPIO; i++) {
+        if (gpioModes[i] != GPIO_OUTPUT) {
+          value |= (digitalRead(gpioPins[i]) << i);
+        } else {
+          value |= (gpioStates[i] << i);
+        }
+      }
+    }
+
+    // Write log entry to EEPROM
+    // Format: [timestamp:4][value:2][source:1][flags:1]
+    uint16_t addr = logWriteAddr;
+
+    // Write timestamp (4 bytes)
+    EEPROM.write(addr++, (now >> 24) & 0xFF);
+    EEPROM.write(addr++, (now >> 16) & 0xFF);
+    EEPROM.write(addr++, (now >> 8) & 0xFF);
+    EEPROM.write(addr++, now & 0xFF);
+
+    // Write value (2 bytes)
+    EEPROM.write(addr++, (value >> 8) & 0xFF);
+    EEPROM.write(addr++, value & 0xFF);
+
+    // Write source (1 byte)
+    EEPROM.write(addr++, logSource);
+
+    // Write flags (1 byte) - reserved
+    EEPROM.write(addr++, 0);
+
+    // Update write address (circular buffer)
+    logWriteAddr = addr;
+    if (logWriteAddr > LOG_END_ADDR - LOG_ENTRY_SIZE) {
+      logWriteAddr = LOG_START_ADDR;
+    }
+
+    logEntryCount++;
+    if (logEntryCount > (LOG_END_ADDR - LOG_START_ADDR + 1) / LOG_ENTRY_SIZE) {
+      logEntryCount = (LOG_END_ADDR - LOG_START_ADDR + 1) / LOG_ENTRY_SIZE;
+    }
+  }
+}
+
+void handleLogStart(String params) {
+  // Parse: <interval> <source>
+  // source: 0-7=A8-A15, 15=GPIO_REG
+  int sp = params.indexOf(' ');
+
+  if (sp == -1) {
+    logInterval = params.toInt();
+    // Keep current source
+  } else {
+    logInterval = params.substring(0, sp).toInt();
+    logSource = params.substring(sp + 1).toInt();
+  }
+
+  if (logInterval < 10) logInterval = 10;  // Min 10ms
+  if (logSource > 15) logSource = 0;
+
+  loggingActive = true;
+  lastLogTime = millis();
+
+  Serial.print(F("LOG_START: "));
+  Serial.print(logInterval);
+  Serial.print(F("ms, source="));
+  if (logSource <= 7) {
+    Serial.print(F("A"));
+    Serial.println(logSource + 8);
+  } else if (logSource == 15) {
+    Serial.println(F("GPIO_REG"));
+  } else {
+    Serial.println(logSource);
+  }
+}
+
+void handleLogStop() {
+  loggingActive = false;
+  Serial.println(F("LOG_STOPPED"));
+  Serial.print(F("Entries logged: "));
+  Serial.println(logEntryCount);
+}
+
+void handleLogRead(String params) {
+  uint16_t numEntries = 10;  // Default
+  if (params.length() > 0) {
+    numEntries = params.toInt();
+  }
+
+  if (numEntries > logEntryCount) numEntries = logEntryCount;
+
+  Serial.print(F("=== LOG DATA ("));
+  Serial.print(numEntries);
+  Serial.println(F(" entries) ==="));
+  Serial.println(F("Time(ms)   Value  Source"));
+
+  // Read from oldest to newest
+  uint16_t readAddr = logWriteAddr - (numEntries * LOG_ENTRY_SIZE);
+  if (readAddr < LOG_START_ADDR) {
+    readAddr = LOG_END_ADDR - (LOG_START_ADDR - readAddr) + 1;
+  }
+
+  for (uint16_t i = 0; i < numEntries; i++) {
+    // Read timestamp
+    unsigned long timestamp = 0;
+    timestamp |= ((unsigned long)EEPROM.read(readAddr++)) << 24;
+    timestamp |= ((unsigned long)EEPROM.read(readAddr++)) << 16;
+    timestamp |= ((unsigned long)EEPROM.read(readAddr++)) << 8;
+    timestamp |= EEPROM.read(readAddr++);
+
+    // Read value
+    uint16_t value = 0;
+    value |= ((uint16_t)EEPROM.read(readAddr++)) << 8;
+    value |= EEPROM.read(readAddr++);
+
+    // Read source
+    uint8_t source = EEPROM.read(readAddr++);
+
+    // Skip flags
+    readAddr++;
+
+    // Wrap address
+    if (readAddr > LOG_END_ADDR) {
+      readAddr = LOG_START_ADDR;
+    }
+
+    // Print entry
+    Serial.print(timestamp);
+    Serial.print(F("\t"));
+    Serial.print(value);
+    Serial.print(F("\t"));
+    if (source <= 7) {
+      Serial.print(F("A"));
+      Serial.println(source + 8);
+    } else if (source == 15) {
+      Serial.println(F("GPIO"));
+    } else {
+      Serial.println(source);
+    }
+  }
+}
+
+void handleLogClear() {
+  logWriteAddr = LOG_START_ADDR;
+  logEntryCount = 0;
+  Serial.println(F("LOG_CLEARED"));
+}
+
+void handleLogConfig(String params) {
+  // #LOGCONFIG <source>
+  logSource = params.toInt();
+  if (logSource > 15) logSource = 0;
+
+  Serial.print(F("LOG_SOURCE="));
+  if (logSource <= 7) {
+    Serial.print(F("A"));
+    Serial.println(logSource + 8);
+  } else if (logSource == 15) {
+    Serial.println(F("GPIO_REG"));
+  } else {
+    Serial.println(logSource);
+  }
+}
+
+void handleLogStatus() {
+  Serial.println(F("=== LOG STATUS ==="));
+  Serial.print(F("Active: "));
+  Serial.println(loggingActive ? F("YES") : F("NO"));
+  Serial.print(F("Interval: "));
+  Serial.print(logInterval);
+  Serial.println(F("ms"));
+  Serial.print(F("Source: "));
+  if (logSource <= 7) {
+    Serial.print(F("A"));
+    Serial.println(logSource + 8);
+  } else if (logSource == 15) {
+    Serial.println(F("GPIO_REG"));
+  } else {
+    Serial.println(logSource);
+  }
+  Serial.print(F("Entries: "));
+  Serial.println(logEntryCount);
+  Serial.print(F("Next addr: 0x"));
+  Serial.println(logWriteAddr, HEX);
+}
+
+// ========== WAVEFORM GENERATOR FUNCTIONS ==========
+
+void updateWaveform() {
+  unsigned long now = micros();
+  unsigned long period = 1000000UL / waveFreq;  // Period in microseconds
+
+  // Update phase based on time
+  if (now - waveLastUpdate >= period / 256) {
+    waveLastUpdate = now;
+    wavePhase++;
+
+    uint8_t pwmValue = 0;
+
+    switch (waveType) {
+      case 0:  // Square wave
+        pwmValue = (wavePhase < 128) ? 255 : 0;
+        break;
+
+      case 1:  // Triangle wave
+        if (wavePhase < 128) {
+          pwmValue = wavePhase * 2;
+        } else {
+          pwmValue = 255 - ((wavePhase - 128) * 2);
+        }
+        break;
+
+      case 2:  // Sine wave (using lookup table)
+        {
+          uint8_t idx = (wavePhase * 32) / 256;
+          pwmValue = pgm_read_byte(&sineLUT[idx]);
+        }
+        break;
+    }
+
+    analogWrite(wavePin, pwmValue);
+  }
+}
+
+void handleWaveGen(String params) {
+  // Parse: <pin> <type> <freq>
+  // type: 0=square, 1=triangle, 2=sine
+  int vals[3];
+  int count = 0;
+  int lastPos = 0;
+
+  for (int i = 0; i <= params.length() && count < 3; i++) {
+    if (i == params.length() || params[i] == ' ') {
+      if (i > lastPos) {
+        String token = params.substring(lastPos, i);
+        token.toUpperCase();
+
+        if (count == 1) {  // Wave type
+          if (token == "SQUARE") vals[count++] = 0;
+          else if (token == "TRIANGLE" || token == "TRI") vals[count++] = 1;
+          else if (token == "SINE" || token == "SIN") vals[count++] = 2;
+          else vals[count++] = token.toInt();
+        } else {
+          vals[count++] = token.toInt();
+        }
+      }
+      lastPos = i + 1;
+    }
+  }
+
+  if (count < 3) {
+    Serial.println(F("ERR:FORMAT #WAVEGEN <pin> <type> <freq>"));
+    Serial.println(F("  type: SQUARE, TRIANGLE, SINE (or 0,1,2)"));
+    Serial.println(F("  freq: 1-10000 Hz"));
+    return;
+  }
+
+  int8_t pin = vals[0];
+  waveType = vals[1];
+  waveFreq = vals[2];
+
+  // Validate
+  if (waveType > 2) waveType = 0;
+  if (waveFreq < 1) waveFreq = 1;
+  if (waveFreq > 10000) waveFreq = 10000;
+
+  // Check if pin supports PWM (Mega PWM pins: 2-13, 44-46)
+  if (!((pin >= 2 && pin <= 13) || (pin >= 44 && pin <= 46))) {
+    Serial.println(F("ERR:PIN_NO_PWM"));
+    Serial.println(F("PWM pins: 2-13, 44-46"));
+    return;
+  }
+
+  wavePin = pin;
+  pinMode(wavePin, OUTPUT);
+  waveActive = true;
+  wavePhase = 0;
+  waveLastUpdate = micros();
+
+  Serial.print(F("WAVE_START: Pin="));
+  Serial.print(wavePin);
+  Serial.print(F(", Type="));
+  switch (waveType) {
+    case 0: Serial.print(F("SQUARE")); break;
+    case 1: Serial.print(F("TRIANGLE")); break;
+    case 2: Serial.print(F("SINE")); break;
+  }
+  Serial.print(F(", Freq="));
+  Serial.print(waveFreq);
+  Serial.println(F("Hz"));
+}
+
+void handleWaveStop() {
+  if (wavePin >= 0) {
+    analogWrite(wavePin, 0);
+    wavePin = -1;
+  }
+  waveActive = false;
+  Serial.println(F("WAVE_STOPPED"));
 }
