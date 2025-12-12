@@ -90,6 +90,20 @@
  *   #EEPROMDUMP <start> <end>       - Dump address range (hex view)
  *   #EEPROMCLEAR                    - Clear entire EEPROM (write 0xFF)
  * Example: #EEPROMWRITE 0 42, #EEPROMREAD 0  - Store and read value
+ *
+ * Analog Input System (8 pins: A8-A15):
+ * - Read analog voltages (0-5V with 10-bit resolution: 0-1023)
+ * - Reference voltage control (DEFAULT=5V, INTERNAL=1.1V, EXTERNAL)
+ * - Averaging for noise reduction
+ * Commands:
+ *   #ANALOGREAD <pin>               - Read single pin (A8-A15)
+ *   #ANALOGREADALL                  - Read all 8 pins at once
+ *   #ANALOGREF <DEFAULT|INTERNAL|EXTERNAL> - Set voltage reference
+ *   #ANALOGAVG <samples>            - Set averaging (1-16 samples)
+ * Example: #ANALOGREAD A8, #ANALOGREAD 8  - Read pin A8
+ * Resolution: 10-bit (0-1023), 0=0V, 1023=Vref
+ * With DEFAULT ref (5V): each count = 4.88mV
+ * With INTERNAL ref (1.1V): each count = 1.07mV
  */
 
 #include <Adafruit_GFX.h>
@@ -252,6 +266,11 @@ uint8_t gpioEventTail = 0;
 int8_t spiCSPin = -1;             // Chip select pin (-1 = not initialized)
 uint32_t spiSpeed = 1000000;      // Default 1 MHz
 uint8_t spiMode = SPI_MODE0;      // Default mode 0
+
+// Analog input configuration
+const uint8_t analogPins[8] = {A8, A9, A10, A11, A12, A13, A14, A15};
+uint8_t analogAvgSamples = 1;     // Number of samples to average (1-16)
+uint8_t analogRefMode = DEFAULT;  // Voltage reference mode
 
 void setup() {
   Serial.begin(115200);      // USB/PC
@@ -1305,6 +1324,19 @@ void processCmd(String c) {
     } else if (c == "#EEPROMCLEAR") {
       handleEEPROMClear();
 
+    // ========== ANALOG INPUT COMMANDS ==========
+    } else if (c.startsWith("#ANALOGREAD ")) {
+      handleAnalogRead(c.substring(12));
+
+    } else if (c == "#ANALOGREADALL") {
+      handleAnalogReadAll();
+
+    } else if (c.startsWith("#ANALOGREF ")) {
+      handleAnalogRef(c.substring(11));
+
+    } else if (c.startsWith("#ANALOGAVG ")) {
+      handleAnalogAvg(c.substring(11));
+
     } else if (c == "#HELP") {
       help();
 
@@ -1760,6 +1792,12 @@ void help() {
   Serial.println(F("  #EEPROMDUMP <start> <end>"));
   Serial.println(F("  #EEPROMCLEAR - Erase all"));
   Serial.println();
+  Serial.println(F("ANALOG INPUT (A8-A15):"));
+  Serial.println(F("  #ANALOGREAD <pin> - Read A8-A15"));
+  Serial.println(F("  #ANALOGREADALL - Read all 8 pins"));
+  Serial.println(F("  #ANALOGREF <DEFAULT|INTERNAL|EXTERNAL>"));
+  Serial.println(F("  #ANALOGAVG <1-16> - Set averaging"));
+  Serial.println();
   Serial.println(F("OTHER:"));
   Serial.println(F("  #CLRALL - Clear both screens"));
   Serial.println(F("  #ROT <0-3> - Rotation"));
@@ -2145,6 +2183,172 @@ int parseHexOrDec(String str) {
     return strtol(str.c_str() + 2, NULL, 16);
   } else {
     return str.toInt();
+  }
+}
+
+// ========== ANALOG INPUT FUNCTIONS ==========
+
+void handleAnalogRead(String params) {
+  params.trim();
+  params.toUpperCase();
+
+  // Parse pin number - accept "A8" or "8" for A8
+  int pinNum = -1;
+  if (params.startsWith("A")) {
+    pinNum = params.substring(1).toInt();
+  } else {
+    pinNum = params.toInt();
+  }
+
+  // Validate pin range (8-15 for A8-A15)
+  if (pinNum < 8 || pinNum > 15) {
+    Serial.println(F("ERR:PIN_RANGE (A8-A15 or 8-15)"));
+    return;
+  }
+
+  // Get the actual analog pin (A8-A15)
+  uint8_t analogPin = analogPins[pinNum - 8];
+
+  // Read analog value with averaging
+  uint32_t sum = 0;
+  for (uint8_t i = 0; i < analogAvgSamples; i++) {
+    sum += analogRead(analogPin);
+    if (analogAvgSamples > 1) delay(1);  // Small delay between samples
+  }
+  uint16_t value = sum / analogAvgSamples;
+
+  // Calculate voltage based on reference
+  float voltage;
+  if (analogRefMode == INTERNAL) {
+    voltage = (value * 1.1) / 1023.0;  // 1.1V internal reference
+  } else if (analogRefMode == EXTERNAL) {
+    voltage = (value * 5.0) / 1023.0;  // Assume 5V external (user must know their ref)
+  } else {
+    voltage = (value * 5.0) / 1023.0;  // DEFAULT = 5V
+  }
+
+  // Print result
+  Serial.print(F("A"));
+  Serial.print(pinNum);
+  Serial.print(F(" = "));
+  Serial.print(value);
+  Serial.print(F(" ("));
+  Serial.print(voltage, 3);
+  Serial.print(F("V)"));
+  if (analogAvgSamples > 1) {
+    Serial.print(F(" [avg "));
+    Serial.print(analogAvgSamples);
+    Serial.print(F("]"));
+  }
+  Serial.println();
+}
+
+void handleAnalogReadAll() {
+  Serial.println(F("Analog Inputs (A8-A15):"));
+
+  // Determine voltage reference string
+  const char* refStr;
+  float refVoltage;
+  if (analogRefMode == INTERNAL) {
+    refStr = "INTERNAL";
+    refVoltage = 1.1;
+  } else if (analogRefMode == EXTERNAL) {
+    refStr = "EXTERNAL";
+    refVoltage = 5.0;  // Assumed
+  } else {
+    refStr = "DEFAULT";
+    refVoltage = 5.0;
+  }
+
+  Serial.print(F("  Reference: "));
+  Serial.print(refStr);
+  Serial.print(F(" ("));
+  Serial.print(refVoltage, 1);
+  Serial.print(F("V), Averaging: "));
+  Serial.println(analogAvgSamples);
+
+  // Read all 8 pins
+  for (uint8_t i = 0; i < 8; i++) {
+    uint8_t pinNum = i + 8;  // A8-A15
+    uint8_t analogPin = analogPins[i];
+
+    // Read with averaging
+    uint32_t sum = 0;
+    for (uint8_t j = 0; j < analogAvgSamples; j++) {
+      sum += analogRead(analogPin);
+      if (analogAvgSamples > 1) delay(1);
+    }
+    uint16_t value = sum / analogAvgSamples;
+
+    // Calculate voltage
+    float voltage = (value * refVoltage) / 1023.0;
+
+    // Print
+    Serial.print(F("  A"));
+    Serial.print(pinNum);
+    Serial.print(F(": "));
+    if (value < 10) Serial.print(F("   "));
+    else if (value < 100) Serial.print(F("  "));
+    else if (value < 1000) Serial.print(F(" "));
+    Serial.print(value);
+    Serial.print(F(" = "));
+    Serial.print(voltage, 3);
+    Serial.println(F("V"));
+  }
+}
+
+void handleAnalogRef(String params) {
+  params.trim();
+  params.toUpperCase();
+
+  if (params == "?") {
+    // Query current reference
+    Serial.print(F("ANALOGREF="));
+    if (analogRefMode == INTERNAL) {
+      Serial.println(F("INTERNAL (1.1V)"));
+    } else if (analogRefMode == EXTERNAL) {
+      Serial.println(F("EXTERNAL"));
+    } else {
+      Serial.println(F("DEFAULT (5V)"));
+    }
+    return;
+  }
+
+  // Set reference
+  if (params == "DEFAULT") {
+    analogRefMode = DEFAULT;
+    analogReference(DEFAULT);
+    Serial.println(F("Analog reference: DEFAULT (5V)"));
+  } else if (params == "INTERNAL") {
+    analogRefMode = INTERNAL;
+    analogReference(INTERNAL1V1);  // Mega uses INTERNAL1V1
+    Serial.println(F("Analog reference: INTERNAL (1.1V)"));
+    Serial.println(F("WARNING: Max input 1.1V!"));
+  } else if (params == "EXTERNAL") {
+    analogRefMode = EXTERNAL;
+    analogReference(EXTERNAL);
+    Serial.println(F("Analog reference: EXTERNAL (AREF pin)"));
+    Serial.println(F("WARNING: Apply voltage to AREF!"));
+  } else {
+    Serial.println(F("ERR:USE DEFAULT|INTERNAL|EXTERNAL"));
+  }
+}
+
+void handleAnalogAvg(String params) {
+  int samples = params.toInt();
+
+  if (samples < 1 || samples > 16) {
+    Serial.println(F("ERR:RANGE (1-16 samples)"));
+    return;
+  }
+
+  analogAvgSamples = samples;
+
+  Serial.print(F("Analog averaging: "));
+  Serial.print(analogAvgSamples);
+  Serial.println(F(" samples"));
+  if (samples > 1) {
+    Serial.println(F("Note: Adds ~1ms delay per sample"));
   }
 }
 
