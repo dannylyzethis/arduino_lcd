@@ -93,17 +93,18 @@
  *
  * Analog Input System (8 pins: A8-A15):
  * - Read analog voltages (0-5V with 10-bit resolution: 0-1023)
- * - Reference voltage control (DEFAULT=5V, INTERNAL=1.1V, EXTERNAL)
+ * - Reference voltage control (DEFAULT=5V, INTERNAL=1.1V)
  * - Averaging for noise reduction
+ * - NOTE: EXTERNAL reference not available (AREF used by LCD shield)
  * Commands:
  *   #ANALOGREAD <pin>               - Read single pin (A8-A15)
  *   #ANALOGREADALL                  - Read all 8 pins at once
- *   #ANALOGREF <DEFAULT|INTERNAL|EXTERNAL> - Set voltage reference
+ *   #ANALOGREF <DEFAULT|INTERNAL>   - Set voltage reference
  *   #ANALOGAVG <samples>            - Set averaging (1-16 samples)
  * Example: #ANALOGREAD A8, #ANALOGREAD 8  - Read pin A8
  * Resolution: 10-bit (0-1023), 0=0V, 1023=Vref
  * With DEFAULT ref (5V): each count = 4.88mV
- * With INTERNAL ref (1.1V): each count = 1.07mV
+ * With INTERNAL ref (1.1V): each count = 1.07mV (high precision!)
  */
 
 #include <Adafruit_GFX.h>
@@ -1795,8 +1796,9 @@ void help() {
   Serial.println(F("ANALOG INPUT (A8-A15):"));
   Serial.println(F("  #ANALOGREAD <pin> - Read A8-A15"));
   Serial.println(F("  #ANALOGREADALL - Read all 8 pins"));
-  Serial.println(F("  #ANALOGREF <DEFAULT|INTERNAL|EXTERNAL>"));
+  Serial.println(F("  #ANALOGREF <DEFAULT|INTERNAL>"));
   Serial.println(F("  #ANALOGAVG <1-16> - Set averaging"));
+  Serial.println(F("  Note: EXTERNAL ref N/A (AREF used by LCD)"));
   Serial.println();
   Serial.println(F("OTHER:"));
   Serial.println(F("  #CLRALL - Clear both screens"));
@@ -2221,8 +2223,6 @@ void handleAnalogRead(String params) {
   float voltage;
   if (analogRefMode == INTERNAL) {
     voltage = (value * 1.1) / 1023.0;  // 1.1V internal reference
-  } else if (analogRefMode == EXTERNAL) {
-    voltage = (value * 5.0) / 1023.0;  // Assume 5V external (user must know their ref)
   } else {
     voltage = (value * 5.0) / 1023.0;  // DEFAULT = 5V
   }
@@ -2252,9 +2252,6 @@ void handleAnalogReadAll() {
   if (analogRefMode == INTERNAL) {
     refStr = "INTERNAL";
     refVoltage = 1.1;
-  } else if (analogRefMode == EXTERNAL) {
-    refStr = "EXTERNAL";
-    refVoltage = 5.0;  // Assumed
   } else {
     refStr = "DEFAULT";
     refVoltage = 5.0;
@@ -2306,8 +2303,6 @@ void handleAnalogRef(String params) {
     Serial.print(F("ANALOGREF="));
     if (analogRefMode == INTERNAL) {
       Serial.println(F("INTERNAL (1.1V)"));
-    } else if (analogRefMode == EXTERNAL) {
-      Serial.println(F("EXTERNAL"));
     } else {
       Serial.println(F("DEFAULT (5V)"));
     }
@@ -2325,12 +2320,11 @@ void handleAnalogRef(String params) {
     Serial.println(F("Analog reference: INTERNAL (1.1V)"));
     Serial.println(F("WARNING: Max input 1.1V!"));
   } else if (params == "EXTERNAL") {
-    analogRefMode = EXTERNAL;
-    analogReference(EXTERNAL);
-    Serial.println(F("Analog reference: EXTERNAL (AREF pin)"));
-    Serial.println(F("WARNING: Apply voltage to AREF!"));
+    Serial.println(F("ERR:EXTERNAL_NOT_AVAILABLE"));
+    Serial.println(F("AREF pin used by LCD shield"));
+    Serial.println(F("Use DEFAULT or INTERNAL only"));
   } else {
-    Serial.println(F("ERR:USE DEFAULT|INTERNAL|EXTERNAL"));
+    Serial.println(F("ERR:USE DEFAULT|INTERNAL"));
   }
 }
 
