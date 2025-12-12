@@ -1,13 +1,26 @@
 /*
- * ILI9341 Serial Display Controller - BALANCED MEMORY VERSION
- * Fixes text wrapping with moderate feature set
- * Optimized for Arduino Uno R3 (under 2KB RAM)
+ * ILI9341 Serial Display Controller - HYBRID VERSION
+ * Supports both serial commands and touch buttons
+ * Optimized for Arduino Uno R3
  */
 
 #include <Adafruit_GFX.h>
 #include <MCUFRIEND_kbv.h>
+#include "TouchScreen.h"
 
 MCUFRIEND_kbv tft;
+
+// Touch screen configuration
+#define MINPRESSURE 200
+#define MAXPRESSURE 1000
+
+// Touch pins - standard configuration for ILI9341 shields
+const int XP = 8, XM = A2, YP = A3, YM = 9;
+// Calibration values - these are typical defaults, may need adjustment
+const int TS_LEFT = 900, TS_RT = 150, TS_TOP = 900, TS_BOT = 150;
+
+TouchScreen ts = TouchScreen(XP, YP, XM, YM, 300);
+Adafruit_GFX_Button clearBtn, redBtn, greenBtn, blueBtn;
 
 // Display constants
 #define BASE_CHAR_W 6
@@ -27,6 +40,32 @@ uint16_t posY = 0;
 String cmd = "";
 bool cmdReady = false;
 
+// Touch handling
+int pixel_x, pixel_y;
+bool Touch_getXY(void) {
+  TSPoint p = ts.getPoint();
+  pinMode(YP, OUTPUT);
+  pinMode(XM, OUTPUT);
+  digitalWrite(YP, HIGH);
+  digitalWrite(XM, HIGH);
+  bool pressed = (p.z > MINPRESSURE && p.z < MAXPRESSURE);
+  if (pressed) {
+    pixel_x = map(p.x, TS_LEFT, TS_RT, 0, tft.width());
+    pixel_y = map(p.y, TS_TOP, TS_BOT, 0, tft.height());
+  }
+  return pressed;
+}
+
+// Color definitions
+#define BLACK   0x0000
+#define BLUE    0x001F
+#define RED     0xF800
+#define GREEN   0x07E0
+#define CYAN    0x07FF
+#define MAGENTA 0xF81F
+#define YELLOW  0xFFE0
+#define WHITE   0xFFFF
+
 void setup() {
   Serial.begin(9600);
   Serial.println(F("ILI9341 Ready"));
@@ -39,19 +78,81 @@ void setup() {
   tft.setTextSize(textSize);
   updateTextColors();
   
-  tft.println(F("Serial Display"));
-  tft.println(F("Ver. 1.0"));
+  // Initialize touch buttons at bottom of screen
+  clearBtn.initButton(&tft, 60, 280, 100, 35, WHITE, CYAN, BLACK, "CLEAR", 2);
+  redBtn.initButton(&tft, 60, 240, 50, 35, WHITE, RED, WHITE, "RED", 1);
+  greenBtn.initButton(&tft, 120, 240, 50, 35, WHITE, GREEN, WHITE, "GRN", 1);
+  blueBtn.initButton(&tft, 180, 240, 50, 35, WHITE, BLUE, WHITE, "BLU", 1);
+
+  clearBtn.drawButton(false);
+  redBtn.drawButton(false);
+  greenBtn.drawButton(false);
+  blueBtn.drawButton(false);
+
+  tft.setCursor(0, 0);
+  tft.println(F("Touch Display"));
+  tft.println(F("Ver. 2.0"));
   tft.println(F("Ready..."));
   posY = tft.getCursorY();
-  
-  cmd.reserve(100); // Reduced from 200
+
+  cmd.reserve(100);
+  Serial.println(F("Touch buttons active"));
 }
 
 void loop() {
+  // Handle serial commands
   if (cmdReady) {
     processCmd(cmd);
     cmd = "";
     cmdReady = false;
+  }
+
+  // Handle touch input
+  bool down = Touch_getXY();
+
+  clearBtn.press(down && clearBtn.contains(pixel_x, pixel_y));
+  redBtn.press(down && redBtn.contains(pixel_x, pixel_y));
+  greenBtn.press(down && greenBtn.contains(pixel_x, pixel_y));
+  blueBtn.press(down && blueBtn.contains(pixel_x, pixel_y));
+
+  // Handle button releases
+  if (clearBtn.justReleased())
+    clearBtn.drawButton();
+  if (redBtn.justReleased())
+    redBtn.drawButton();
+  if (greenBtn.justReleased())
+    greenBtn.drawButton();
+  if (blueBtn.justReleased())
+    blueBtn.drawButton();
+
+  // Handle button presses
+  if (clearBtn.justPressed()) {
+    clearBtn.drawButton(true);
+    tft.fillRect(0, 0, screenW, 220, BLACK);
+    posX = posY = 0;
+    tft.setCursor(0, 0);
+    Serial.println(F("Touch: CLEAR"));
+  }
+
+  if (redBtn.justPressed()) {
+    redBtn.drawButton(true);
+    textColor = RED;
+    updateTextColors();
+    Serial.println(F("Touch: RED"));
+  }
+
+  if (greenBtn.justPressed()) {
+    greenBtn.drawButton(true);
+    textColor = GREEN;
+    updateTextColors();
+    Serial.println(F("Touch: GREEN"));
+  }
+
+  if (blueBtn.justPressed()) {
+    blueBtn.drawButton(true);
+    textColor = BLUE;
+    updateTextColors();
+    Serial.println(F("Touch: BLUE"));
   }
 }
 
