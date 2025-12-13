@@ -294,6 +294,35 @@ uint16_t logWriteAddr = 2000;
 uint16_t logEntryCount = 0;
 uint8_t logSource = 0;  // 0=A8, 1=A9, ... 15=GPIO_REG
 
+// Statistics tracking (for analog inputs A8-A15)
+struct Stats {
+  uint16_t minVal;
+  uint16_t maxVal;
+  uint32_t sum;
+  uint32_t count;
+  bool active;
+};
+Stats analogStats[8];  // One for each analog input A8-A15
+
+// Threshold alerts
+struct Threshold {
+  uint16_t lowThreshold;
+  uint16_t highThreshold;
+  bool active;
+  bool alertState;  // true if currently in alert state
+};
+Threshold thresholds[8];  // One for each analog input A8-A15
+
+// Command macros
+#define MAX_MACROS 3
+#define MAX_MACRO_CMDS 5
+struct Macro {
+  String commands[MAX_MACRO_CMDS];
+  uint8_t cmdCount;
+  bool defined;
+};
+Macro macros[MAX_MACROS];
+
 // EEPROM Write Protection Zones (up to 4 protected ranges)
 #define MAX_PROTECT_ZONES 4
 struct ProtectZone {
@@ -657,6 +686,16 @@ void loop() {
   // Handle frequency monitoring
   if (freqMonActive) {
     updateFreqMonitor();
+  }
+
+  // Update statistics
+  updateStats();
+
+  // Check threshold alerts
+  static unsigned long lastThresholdCheck = 0;
+  if (millis() - lastThresholdCheck >= 100) {  // Check every 100ms
+    lastThresholdCheck = millis();
+    checkThresholds();
   }
 
   if (cmdReady) {
@@ -1702,6 +1741,60 @@ void processCmd(String c) {
     } else if (c == "#WAVESTOP") {
       handleWaveStop();
 
+    } else if (c.startsWith("#PWMSET ")) {
+      handlePWMSet(c.substring(8));
+
+    } else if (c.startsWith("#PWMSTOP ")) {
+      handlePWMStop(c.substring(9));
+
+    } else if (c.startsWith("#PWMFREQ ")) {
+      handlePWMFreq(c.substring(9));
+
+    } else if (c == "#MEMINFO") {
+      handleMemInfo();
+
+    } else if (c == "#UPTIME") {
+      handleUptime();
+
+    } else if (c == "#BENCHMARK") {
+      handleBenchmark();
+
+    } else if (c.startsWith("#STATSSTART ")) {
+      handleStatsStart(c.substring(12));
+
+    } else if (c.startsWith("#STATSSTOP ")) {
+      handleStatsStop(c.substring(11));
+
+    } else if (c.startsWith("#STATSSHOW ")) {
+      handleStatsShow(c.substring(11));
+
+    } else if (c == "#STATSRESET") {
+      handleStatsReset();
+
+    } else if (c.startsWith("#THRESHOLD ")) {
+      handleThresholdSet(c.substring(11));
+
+    } else if (c.startsWith("#THRESHOLDCLEAR ")) {
+      handleThresholdClear(c.substring(16));
+
+    } else if (c == "#THRESHOLDSTATUS") {
+      handleThresholdStatus();
+
+    } else if (c.startsWith("#SCROLL ")) {
+      handleScroll(c.substring(8));
+
+    } else if (c.startsWith("#MACRODEF ")) {
+      handleMacroDef(c.substring(10));
+
+    } else if (c.startsWith("#MACRORUN ")) {
+      handleMacroRun(c.substring(10));
+
+    } else if (c == "#MACROLIST") {
+      handleMacroList();
+
+    } else if (c.startsWith("#MACROCLEAR ")) {
+      handleMacroClear(c.substring(12));
+
     } else if (c.startsWith("#PULSEIN ")) {
       handlePulseIn(c.substring(9));
 
@@ -2225,6 +2318,44 @@ void help() {
   Serial.println(F("    freq: 1-10000 Hz"));
   Serial.println(F("    PWM pins: 2-13, 44-46"));
   Serial.println(F("  #WAVESTOP - Stop waveform"));
+  Serial.println();
+  Serial.println(F("PWM CONTROL:"));
+  Serial.println(F("  #PWMSET <pin> <duty> - Set PWM output"));
+  Serial.println(F("    duty: 0-255 (0=off, 255=full)"));
+  Serial.println(F("  #PWMSTOP <pin> - Stop PWM on pin"));
+  Serial.println(F("  #PWMFREQ <pin> <freq> - Set PWM frequency"));
+  Serial.println(F("    freq: 31-31250 Hz (steps)"));
+  Serial.println(F("    WARNING: Affects all pins on timer!"));
+  Serial.println(F("    Pins 4,13 protected (Timer0/millis)"));
+  Serial.println();
+  Serial.println(F("SYSTEM INFO:"));
+  Serial.println(F("  #MEMINFO - Show memory usage"));
+  Serial.println(F("  #UPTIME - Show system uptime"));
+  Serial.println(F("  #BENCHMARK - Run performance tests"));
+  Serial.println();
+  Serial.println(F("STATISTICS:"));
+  Serial.println(F("  #STATSSTART <pin> - Start stats for A8-A15"));
+  Serial.println(F("    pin: 0=A8, 1=A9, ... 7=A15"));
+  Serial.println(F("  #STATSSTOP <pin> - Stop stats collection"));
+  Serial.println(F("  #STATSSHOW <pin> - Show min/max/avg"));
+  Serial.println(F("  #STATSRESET - Reset all statistics"));
+  Serial.println();
+  Serial.println(F("THRESHOLD ALERTS:"));
+  Serial.println(F("  #THRESHOLD <pin> <low> <high>"));
+  Serial.println(F("    Triggers alert when value outside range"));
+  Serial.println(F("  #THRESHOLDCLEAR <pin> - Clear threshold"));
+  Serial.println(F("  #THRESHOLDSTATUS - Show all thresholds"));
+  Serial.println();
+  Serial.println(F("SCROLLING TEXT:"));
+  Serial.println(F("  #SCROLL <y> <text>"));
+  Serial.println(F("    Horizontal scrolling text at Y position"));
+  Serial.println();
+  Serial.println(F("COMMAND MACROS:"));
+  Serial.println(F("  #MACRODEF <id> <cmd1>;<cmd2>..."));
+  Serial.println(F("    Define macro (id: 0-2, max 5 cmds)"));
+  Serial.println(F("  #MACRORUN <id> - Run macro"));
+  Serial.println(F("  #MACROLIST - List all macros"));
+  Serial.println(F("  #MACROCLEAR <id> - Clear macro"));
   Serial.println();
   Serial.println(F("PULSE/FREQUENCY MEASUREMENT:"));
   Serial.println(F("  #PULSEIN <pin> <state> <timeout>"));
@@ -4616,6 +4747,788 @@ void handleWaveStop() {
   }
   waveActive = false;
   Serial.println(F("WAVE_STOPPED"));
+}
+
+// ========== PWM CONTROL FUNCTIONS ==========
+
+// Simple PWM control without waveform generation complexity
+void handlePWMSet(String params) {
+  // Parse: <pin> <duty>
+  // duty: 0-255
+  int vals[2];
+  int count = 0;
+  int lastPos = 0;
+
+  for (int i = 0; i <= params.length() && count < 2; i++) {
+    if (i == params.length() || params[i] == ' ') {
+      if (i > lastPos) {
+        vals[count++] = params.substring(lastPos, i).toInt();
+      }
+      lastPos = i + 1;
+    }
+  }
+
+  if (count < 2) {
+    Serial.println(F("ERR:FORMAT #PWMSET <pin> <duty>"));
+    Serial.println(F("  pin: PWM-capable pin (2-13, 44-46)"));
+    Serial.println(F("  duty: 0-255 (0=off, 255=full on)"));
+    return;
+  }
+
+  int pin = vals[0];
+  int duty = vals[1];
+
+  // Check if pin supports PWM (Mega PWM pins: 2-13, 44-46)
+  if (!((pin >= 2 && pin <= 13) || (pin >= 44 && pin <= 46))) {
+    Serial.println(F("ERR:PIN_NO_PWM"));
+    Serial.println(F("PWM pins: 2-13, 44-46"));
+    return;
+  }
+
+  // Validate duty cycle
+  if (duty < 0) duty = 0;
+  if (duty > 255) duty = 255;
+
+  pinMode(pin, OUTPUT);
+  analogWrite(pin, duty);
+
+  Serial.print(F("PWM_SET: Pin="));
+  Serial.print(pin);
+  Serial.print(F(", Duty="));
+  Serial.print(duty);
+  Serial.print(F(" ("));
+  Serial.print((duty * 100) / 255);
+  Serial.println(F("%)"));
+}
+
+void handlePWMStop(String params) {
+  int pin = params.toInt();
+
+  // Check if pin supports PWM
+  if (!((pin >= 2 && pin <= 13) || (pin >= 44 && pin <= 46))) {
+    Serial.println(F("ERR:PIN_NO_PWM"));
+    Serial.println(F("PWM pins: 2-13, 44-46"));
+    return;
+  }
+
+  analogWrite(pin, 0);
+  Serial.print(F("PWM_STOPPED: Pin="));
+  Serial.println(pin);
+}
+
+void handlePWMFreq(String params) {
+  // Parse: <pin> <freq>
+  int vals[2];
+  int count = 0;
+  int lastPos = 0;
+
+  for (int i = 0; i <= params.length() && count < 2; i++) {
+    if (i == params.length() || params[i] == ' ') {
+      if (i > lastPos) {
+        vals[count++] = params.substring(lastPos, i).toInt();
+      }
+      lastPos = i + 1;
+    }
+  }
+
+  if (count < 2) {
+    Serial.println(F("ERR:FORMAT #PWMFREQ <pin> <freq>"));
+    Serial.println(F("  pin: PWM pin (2-13, 44-46)"));
+    Serial.println(F("  freq: 31, 62, 122, 244, 488, 976, 1953, 3906, 7812, 15625, 31250 Hz"));
+    Serial.println(F("  Note: Affects all pins on same timer"));
+    return;
+  }
+
+  int pin = vals[0];
+  unsigned long freq = vals[1];
+
+  // Check if pin supports PWM
+  if (!((pin >= 2 && pin <= 13) || (pin >= 44 && pin <= 46))) {
+    Serial.println(F("ERR:PIN_NO_PWM"));
+    return;
+  }
+
+  // Determine which timer controls this pin
+  // Timer 0 (pins 4, 13) - DO NOT MODIFY (used by millis/delay)
+  // Timer 1 (pins 11, 12)
+  // Timer 2 (pins 9, 10)
+  // Timer 3 (pins 2, 3, 5)
+  // Timer 4 (pins 6, 7, 8)
+  // Timer 5 (pins 44, 45, 46)
+
+  uint8_t timer = 0;
+  if (pin == 11 || pin == 12) timer = 1;
+  else if (pin == 9 || pin == 10) timer = 2;
+  else if (pin == 2 || pin == 3 || pin == 5) timer = 3;
+  else if (pin == 6 || pin == 7 || pin == 8) timer = 4;
+  else if (pin >= 44 && pin <= 46) timer = 5;
+  else if (pin == 4 || pin == 13) {
+    Serial.println(F("ERR:TIMER0_PROTECTED"));
+    Serial.println(F("Pins 4,13 use Timer0 (millis/delay)"));
+    return;
+  }
+
+  // Map frequency to prescaler value
+  // Base freq for 16MHz: 16000000 / (prescaler * 256)
+  // For 16-bit timers (1,3,4,5): can use prescaler 1,8,64,256,1024
+  // For 8-bit timer (2): can use prescaler 1,8,32,64,128,256,1024
+  uint8_t prescaler = 0;
+  uint16_t csrValue = 0;
+
+  if (timer == 2) {
+    // Timer 2 (8-bit) prescaler options
+    if (freq >= 31250) { prescaler = 1; csrValue = 1; }       // 62500 Hz
+    else if (freq >= 7812) { prescaler = 8; csrValue = 2; }   // 7812.5 Hz
+    else if (freq >= 1953) { prescaler = 32; csrValue = 3; }  // 1953 Hz
+    else if (freq >= 976) { prescaler = 64; csrValue = 4; }   // 976.5 Hz
+    else if (freq >= 488) { prescaler = 128; csrValue = 5; }  // 488 Hz
+    else if (freq >= 244) { prescaler = 256; csrValue = 6; }  // 244 Hz
+    else { prescaler = 1024; csrValue = 7; }                  // 61 Hz
+  } else {
+    // Timers 1, 3, 4, 5 (16-bit) prescaler options
+    if (freq >= 31250) { prescaler = 1; csrValue = 1; }       // 62500 Hz
+    else if (freq >= 7812) { prescaler = 8; csrValue = 2; }   // 7812.5 Hz
+    else if (freq >= 976) { prescaler = 64; csrValue = 3; }   // 976.5 Hz
+    else if (freq >= 244) { prescaler = 256; csrValue = 4; }  // 244 Hz
+    else { prescaler = 1024; csrValue = 5; }                  // 61 Hz
+  }
+
+  // Set prescaler for the appropriate timer
+  switch (timer) {
+    case 1:
+      TCCR1B = (TCCR1B & 0xF8) | csrValue;
+      break;
+    case 2:
+      TCCR2B = (TCCR2B & 0xF8) | csrValue;
+      break;
+    case 3:
+      TCCR3B = (TCCR3B & 0xF8) | csrValue;
+      break;
+    case 4:
+      TCCR4B = (TCCR4B & 0xF8) | csrValue;
+      break;
+    case 5:
+      TCCR5B = (TCCR5B & 0xF8) | csrValue;
+      break;
+  }
+
+  unsigned long actualFreq = 16000000UL / (prescaler * 256UL);
+
+  Serial.print(F("PWM_FREQ: Timer"));
+  Serial.print(timer);
+  Serial.print(F(", Prescaler="));
+  Serial.print(prescaler);
+  Serial.print(F(", Freq="));
+  Serial.print(actualFreq);
+  Serial.println(F("Hz"));
+  Serial.println(F("WARNING: Affects all pins on this timer!"));
+}
+
+// ========== SYSTEM INFO FUNCTIONS ==========
+
+// Get free RAM
+int getFreeRAM() {
+  extern int __heap_start, *__brkval;
+  int v;
+  return (int)&v - (__brkval == 0 ? (int)&__heap_start : (int)__brkval);
+}
+
+void handleMemInfo() {
+  int freeRAM = getFreeRAM();
+
+  Serial.println(F("=== MEMORY INFO ==="));
+  Serial.print(F("Free RAM: "));
+  Serial.print(freeRAM);
+  Serial.print(F(" bytes ("));
+  Serial.print((freeRAM * 100) / 8192);
+  Serial.println(F("%)"));
+
+  Serial.print(F("EEPROM Total: "));
+  Serial.println(F("4096 bytes"));
+
+  Serial.print(F("EEPROM Config: "));
+  Serial.println(F("0-99 (100 bytes)"));
+
+  Serial.print(F("EEPROM FPGA Zone: "));
+  Serial.println(F("100-299 (200 bytes)"));
+
+  Serial.print(F("EEPROM User Zone: "));
+  Serial.println(F("300-499 (200 bytes)"));
+
+  Serial.print(F("EEPROM Free: "));
+  Serial.println(F("500-1999 (1500 bytes)"));
+
+  Serial.print(F("EEPROM Log Zone: "));
+  Serial.print(logStartAddr);
+  Serial.print(F("-"));
+  Serial.print(logEndAddr);
+  Serial.print(F(" ("));
+  Serial.print(logEndAddr - logStartAddr + 1);
+  Serial.println(F(" bytes)"));
+
+  Serial.print(F("Log Entries: "));
+  Serial.print(logEntryCount);
+  Serial.print(F("/"));
+  Serial.println((logEndAddr - logStartAddr + 1) / LOG_ENTRY_SIZE);
+
+  Serial.println(F("=================="));
+}
+
+void handleUptime() {
+  unsigned long uptime = millis();
+  unsigned long seconds = uptime / 1000;
+  unsigned long minutes = seconds / 60;
+  unsigned long hours = minutes / 60;
+  unsigned long days = hours / 24;
+
+  seconds %= 60;
+  minutes %= 60;
+  hours %= 24;
+
+  Serial.print(F("UPTIME: "));
+  if (days > 0) {
+    Serial.print(days);
+    Serial.print(F("d "));
+  }
+  if (hours > 0 || days > 0) {
+    Serial.print(hours);
+    Serial.print(F("h "));
+  }
+  if (minutes > 0 || hours > 0 || days > 0) {
+    Serial.print(minutes);
+    Serial.print(F("m "));
+  }
+  Serial.print(seconds);
+  Serial.print(F("s ("));
+  Serial.print(uptime);
+  Serial.println(F("ms)"));
+}
+
+void handleBenchmark() {
+  Serial.println(F("=== BENCHMARK ==="));
+  unsigned long start, duration;
+
+  // Test 1: Integer math
+  start = micros();
+  volatile long result = 0;
+  for (int i = 0; i < 10000; i++) {
+    result += i * 3;
+  }
+  duration = micros() - start;
+  Serial.print(F("Int Math (10k): "));
+  Serial.print(duration);
+  Serial.println(F("us"));
+
+  // Test 2: Float math
+  start = micros();
+  volatile float fresult = 0.0;
+  for (int i = 0; i < 1000; i++) {
+    fresult += (float)i * 3.14159;
+  }
+  duration = micros() - start;
+  Serial.print(F("Float Math (1k): "));
+  Serial.print(duration);
+  Serial.println(F("us"));
+
+  // Test 3: Analog read
+  start = micros();
+  for (int i = 0; i < 100; i++) {
+    volatile int val = analogRead(A8);
+  }
+  duration = micros() - start;
+  Serial.print(F("Analog Read (100): "));
+  Serial.print(duration);
+  Serial.print(F("us ("));
+  Serial.print(duration / 100);
+  Serial.println(F("us/read)"));
+
+  // Test 4: Digital write
+  pinMode(22, OUTPUT);
+  start = micros();
+  for (int i = 0; i < 1000; i++) {
+    digitalWrite(22, i & 1);
+  }
+  duration = micros() - start;
+  Serial.print(F("Digital Write (1k): "));
+  Serial.print(duration);
+  Serial.print(F("us ("));
+  Serial.print(duration / 1000);
+  Serial.println(F("us/write)"));
+
+  // Test 5: Display pixel drawing
+  start = millis();
+  for (int i = 0; i < 1000; i++) {
+    tft.drawPixel(100 + (i % 100), 100 + (i / 100), topTextColor);
+  }
+  duration = millis() - start;
+  Serial.print(F("Display Pixels (1k): "));
+  Serial.print(duration);
+  Serial.println(F("ms"));
+
+  // Test 6: Display text
+  start = millis();
+  tft.setTextSize(1);
+  for (int i = 0; i < 10; i++) {
+    tft.setCursor(10, 10);
+    tft.print(F("Benchmark"));
+  }
+  duration = millis() - start;
+  Serial.print(F("Display Text (10x): "));
+  Serial.print(duration);
+  Serial.println(F("ms"));
+
+  // Test 7: EEPROM write
+  start = millis();
+  for (int i = 0; i < 100; i++) {
+    EEPROM.write(500 + i, i & 0xFF);
+  }
+  duration = millis() - start;
+  Serial.print(F("EEPROM Write (100): "));
+  Serial.print(duration);
+  Serial.print(F("ms ("));
+  Serial.print(duration / 100.0, 2);
+  Serial.println(F("ms/byte)"));
+
+  // Test 8: EEPROM read
+  start = micros();
+  for (int i = 0; i < 100; i++) {
+    volatile uint8_t val = EEPROM.read(500 + i);
+  }
+  duration = micros() - start;
+  Serial.print(F("EEPROM Read (100): "));
+  Serial.print(duration);
+  Serial.print(F("us ("));
+  Serial.print(duration / 100);
+  Serial.println(F("us/byte)"));
+
+  Serial.println(F("================="));
+}
+
+// ========== STATISTICS FUNCTIONS ==========
+
+void handleStatsStart(String params) {
+  // Parse: <source>
+  // source: 0-7 for A8-A15
+  int source = params.toInt();
+
+  if (source < 0 || source > 7) {
+    Serial.println(F("ERR:SOURCE_0_TO_7"));
+    Serial.println(F("  0=A8, 1=A9, ... 7=A15"));
+    return;
+  }
+
+  // Reset statistics for this source
+  analogStats[source].minVal = 1023;
+  analogStats[source].maxVal = 0;
+  analogStats[source].sum = 0;
+  analogStats[source].count = 0;
+  analogStats[source].active = true;
+
+  Serial.print(F("STATS_START: A"));
+  Serial.println(source + 8);
+}
+
+void handleStatsStop(String params) {
+  int source = params.toInt();
+
+  if (source < 0 || source > 7) {
+    Serial.println(F("ERR:SOURCE_0_TO_7"));
+    return;
+  }
+
+  analogStats[source].active = false;
+  Serial.print(F("STATS_STOP: A"));
+  Serial.println(source + 8);
+}
+
+void handleStatsShow(String params) {
+  // Parse: <source>
+  int source = params.toInt();
+
+  if (source < 0 || source > 7) {
+    Serial.println(F("ERR:SOURCE_0_TO_7"));
+    return;
+  }
+
+  Stats& s = analogStats[source];
+
+  Serial.print(F("=== STATS A"));
+  Serial.print(source + 8);
+  Serial.println(F(" ==="));
+
+  Serial.print(F("Active: "));
+  Serial.println(s.active ? F("YES") : F("NO"));
+
+  if (s.count == 0) {
+    Serial.println(F("No data collected"));
+  } else {
+    Serial.print(F("Samples: "));
+    Serial.println(s.count);
+
+    Serial.print(F("Min: "));
+    Serial.print(s.minVal);
+    Serial.print(F(" ("));
+    Serial.print((s.minVal * 5000UL) / 1024);
+    Serial.println(F("mV)"));
+
+    Serial.print(F("Max: "));
+    Serial.print(s.maxVal);
+    Serial.print(F(" ("));
+    Serial.print((s.maxVal * 5000UL) / 1024);
+    Serial.println(F("mV)"));
+
+    uint16_t avg = s.sum / s.count;
+    Serial.print(F("Avg: "));
+    Serial.print(avg);
+    Serial.print(F(" ("));
+    Serial.print((avg * 5000UL) / 1024);
+    Serial.println(F("mV)"));
+
+    Serial.print(F("Range: "));
+    Serial.println(s.maxVal - s.minVal);
+  }
+
+  Serial.println(F("================"));
+}
+
+void handleStatsReset() {
+  // Reset all statistics
+  for (uint8_t i = 0; i < 8; i++) {
+    analogStats[i].minVal = 1023;
+    analogStats[i].maxVal = 0;
+    analogStats[i].sum = 0;
+    analogStats[i].count = 0;
+    analogStats[i].active = false;
+  }
+  Serial.println(F("STATS_RESET: All channels cleared"));
+}
+
+// Update statistics (call from loop when stats are active)
+void updateStats() {
+  for (uint8_t i = 0; i < 8; i++) {
+    if (analogStats[i].active) {
+      uint16_t val = analogRead(analogPins[i]);
+
+      if (val < analogStats[i].minVal) analogStats[i].minVal = val;
+      if (val > analogStats[i].maxVal) analogStats[i].maxVal = val;
+      analogStats[i].sum += val;
+      analogStats[i].count++;
+    }
+  }
+}
+
+// ========== THRESHOLD ALERT FUNCTIONS ==========
+
+void handleThresholdSet(String params) {
+  // Parse: <pin> <low> <high>
+  // pin: 0-7 for A8-A15
+  int vals[3];
+  int count = 0;
+  int lastPos = 0;
+
+  for (int i = 0; i <= params.length() && count < 3; i++) {
+    if (i == params.length() || params[i] == ' ') {
+      if (i > lastPos) {
+        vals[count++] = params.substring(lastPos, i).toInt();
+      }
+      lastPos = i + 1;
+    }
+  }
+
+  if (count < 3) {
+    Serial.println(F("ERR:FORMAT #THRESHOLD <pin> <low> <high>"));
+    Serial.println(F("  pin: 0=A8, 1=A9, ... 7=A15"));
+    Serial.println(F("  low/high: 0-1023"));
+    return;
+  }
+
+  int pin = vals[0];
+  uint16_t low = vals[1];
+  uint16_t high = vals[2];
+
+  if (pin < 0 || pin > 7) {
+    Serial.println(F("ERR:PIN_0_TO_7"));
+    return;
+  }
+
+  if (low > 1023) low = 1023;
+  if (high > 1023) high = 1023;
+  if (low >= high) {
+    Serial.println(F("ERR:LOW_MUST_BE_LESS_THAN_HIGH"));
+    return;
+  }
+
+  thresholds[pin].lowThreshold = low;
+  thresholds[pin].highThreshold = high;
+  thresholds[pin].active = true;
+  thresholds[pin].alertState = false;
+
+  Serial.print(F("THRESHOLD_SET: A"));
+  Serial.print(pin + 8);
+  Serial.print(F(", Low="));
+  Serial.print(low);
+  Serial.print(F(", High="));
+  Serial.println(high);
+}
+
+void handleThresholdClear(String params) {
+  int pin = params.toInt();
+
+  if (pin < 0 || pin > 7) {
+    Serial.println(F("ERR:PIN_0_TO_7"));
+    return;
+  }
+
+  thresholds[pin].active = false;
+  thresholds[pin].alertState = false;
+
+  Serial.print(F("THRESHOLD_CLEAR: A"));
+  Serial.println(pin + 8);
+}
+
+void handleThresholdStatus() {
+  Serial.println(F("=== THRESHOLD STATUS ==="));
+  for (uint8_t i = 0; i < 8; i++) {
+    if (thresholds[i].active) {
+      Serial.print(F("A"));
+      Serial.print(i + 8);
+      Serial.print(F(": Low="));
+      Serial.print(thresholds[i].lowThreshold);
+      Serial.print(F(", High="));
+      Serial.print(thresholds[i].highThreshold);
+      Serial.print(F(", Alert="));
+      Serial.println(thresholds[i].alertState ? F("YES") : F("NO"));
+    }
+  }
+  Serial.println(F("========================"));
+}
+
+// Check thresholds and trigger alerts
+void checkThresholds() {
+  for (uint8_t i = 0; i < 8; i++) {
+    if (thresholds[i].active) {
+      uint16_t val = analogRead(analogPins[i]);
+
+      // Check if value is outside threshold range
+      bool inAlert = (val < thresholds[i].lowThreshold || val > thresholds[i].highThreshold);
+
+      // Trigger alert on state change
+      if (inAlert && !thresholds[i].alertState) {
+        // Entering alert state
+        thresholds[i].alertState = true;
+
+        Serial.print(F("ALERT: A"));
+        Serial.print(i + 8);
+        Serial.print(F(" = "));
+        Serial.print(val);
+        if (val < thresholds[i].lowThreshold) {
+          Serial.print(F(" < "));
+          Serial.println(thresholds[i].lowThreshold);
+        } else {
+          Serial.print(F(" > "));
+          Serial.println(thresholds[i].highThreshold);
+        }
+
+        // Visual alert on display
+        tft.fillRect(0, screenH - 20, screenW, 20, ILI9486_RED);
+        tft.setTextColor(ILI9486_WHITE, ILI9486_RED);
+        tft.setTextSize(2);
+        tft.setCursor(5, screenH - 18);
+        tft.print(F("ALERT A"));
+        tft.print(i + 8);
+        tft.print(F(": "));
+        tft.print(val);
+
+      } else if (!inAlert && thresholds[i].alertState) {
+        // Leaving alert state
+        thresholds[i].alertState = false;
+
+        Serial.print(F("CLEAR: A"));
+        Serial.print(i + 8);
+        Serial.print(F(" = "));
+        Serial.println(val);
+
+        // Clear visual alert
+        tft.fillRect(0, screenH - 20, screenW, 20, 0x0000);
+      }
+    }
+  }
+}
+
+// ========== SCROLLING TEXT FUNCTIONS ==========
+
+void handleScroll(String params) {
+  // Parse: <y> <text>
+  // Simple horizontal scrolling text
+  int sp = params.indexOf(' ');
+  if (sp == -1) {
+    Serial.println(F("ERR:FORMAT #SCROLL <y> <text>"));
+    Serial.println(F("  y: Y position (0-screenH)"));
+    return;
+  }
+
+  int y = params.substring(0, sp).toInt();
+  String text = params.substring(sp + 1);
+
+  if (y < 0 || y >= screenH - 20) {
+    Serial.println(F("ERR:Y_OUT_OF_RANGE"));
+    return;
+  }
+
+  // Set text properties
+  tft.setTextSize(topTextSize);
+  tft.setTextColor(topTextColor);
+
+  // Calculate text width
+  int16_t x1, y1;
+  uint16_t w, h;
+  tft.getTextBounds(text, 0, 0, &x1, &y1, &w, &h);
+
+  // Scroll from right to left
+  for (int x = screenW; x > -w; x -= 4) {
+    // Clear the line
+    tft.fillRect(0, y, screenW, h + 4, 0x0000);
+
+    // Draw text at new position
+    tft.setCursor(x, y);
+    tft.print(text);
+
+    delay(20);  // Scroll speed
+
+    // Check for incoming commands to allow interruption
+    if (Serial.available()) {
+      break;
+    }
+  }
+
+  // Clear the line when done
+  tft.fillRect(0, y, screenW, h + 4, 0x0000);
+
+  Serial.println(F("SCROLL_DONE"));
+}
+
+// ========== COMMAND MACRO FUNCTIONS ==========
+
+void handleMacroDef(String params) {
+  // Parse: <id> <cmd1>;<cmd2>;<cmd3>...
+  // id: 0-2 (MAX_MACROS-1)
+  int sp = params.indexOf(' ');
+  if (sp == -1) {
+    Serial.println(F("ERR:FORMAT #MACRODEF <id> <cmd1>;<cmd2>..."));
+    Serial.println(F("  id: 0-2, max 5 commands per macro"));
+    return;
+  }
+
+  int id = params.substring(0, sp).toInt();
+  String cmdStr = params.substring(sp + 1);
+
+  if (id < 0 || id >= MAX_MACROS) {
+    Serial.print(F("ERR:ID_0_TO_"));
+    Serial.println(MAX_MACROS - 1);
+    return;
+  }
+
+  // Clear existing macro
+  macros[id].cmdCount = 0;
+  macros[id].defined = false;
+
+  // Parse commands separated by semicolons
+  int lastPos = 0;
+  for (int i = 0; i <= cmdStr.length() && macros[id].cmdCount < MAX_MACRO_CMDS; i++) {
+    if (i == cmdStr.length() || cmdStr[i] == ';') {
+      if (i > lastPos) {
+        String cmd = cmdStr.substring(lastPos, i);
+        cmd.trim();
+        if (cmd.length() > 0) {
+          macros[id].commands[macros[id].cmdCount++] = cmd;
+        }
+      }
+      lastPos = i + 1;
+    }
+  }
+
+  if (macros[id].cmdCount > 0) {
+    macros[id].defined = true;
+    Serial.print(F("MACRO_DEF: ID="));
+    Serial.print(id);
+    Serial.print(F(", Commands="));
+    Serial.println(macros[id].cmdCount);
+  } else {
+    Serial.println(F("ERR:NO_COMMANDS"));
+  }
+}
+
+void handleMacroRun(String params) {
+  int id = params.toInt();
+
+  if (id < 0 || id >= MAX_MACROS) {
+    Serial.print(F("ERR:ID_0_TO_"));
+    Serial.println(MAX_MACROS - 1);
+    return;
+  }
+
+  if (!macros[id].defined) {
+    Serial.print(F("ERR:MACRO_"));
+    Serial.print(id);
+    Serial.println(F("_NOT_DEFINED"));
+    return;
+  }
+
+  Serial.print(F("MACRO_RUN: ID="));
+  Serial.println(id);
+
+  // Execute each command in sequence
+  for (uint8_t i = 0; i < macros[id].cmdCount; i++) {
+    Serial.print(F("  ["));
+    Serial.print(i + 1);
+    Serial.print(F("/"));
+    Serial.print(macros[id].cmdCount);
+    Serial.print(F("] "));
+    Serial.println(macros[id].commands[i]);
+
+    processCmd(macros[id].commands[i]);
+    delay(50);  // Small delay between commands
+  }
+
+  Serial.println(F("MACRO_DONE"));
+}
+
+void handleMacroList() {
+  Serial.println(F("=== MACROS ==="));
+  for (uint8_t i = 0; i < MAX_MACROS; i++) {
+    Serial.print(F("Macro "));
+    Serial.print(i);
+    Serial.print(F(": "));
+    if (macros[i].defined) {
+      Serial.print(macros[i].cmdCount);
+      Serial.println(F(" commands"));
+      for (uint8_t j = 0; j < macros[i].cmdCount; j++) {
+        Serial.print(F("  "));
+        Serial.print(j + 1);
+        Serial.print(F(". "));
+        Serial.println(macros[i].commands[j]);
+      }
+    } else {
+      Serial.println(F("Not defined"));
+    }
+  }
+  Serial.println(F("=============="));
+}
+
+void handleMacroClear(String params) {
+  int id = params.toInt();
+
+  if (id < 0 || id >= MAX_MACROS) {
+    Serial.print(F("ERR:ID_0_TO_"));
+    Serial.println(MAX_MACROS - 1);
+    return;
+  }
+
+  macros[id].cmdCount = 0;
+  macros[id].defined = false;
+
+  Serial.print(F("MACRO_CLEAR: ID="));
+  Serial.println(id);
 }
 
 // ========== PULSE/FREQUENCY MEASUREMENT FUNCTIONS ==========
