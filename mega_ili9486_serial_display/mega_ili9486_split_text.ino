@@ -5330,8 +5330,8 @@ void checkThresholds() {
         }
 
         // Visual alert on display
-        tft.fillRect(0, screenH - 20, screenW, 20, ILI9486_RED);
-        tft.setTextColor(ILI9486_WHITE, ILI9486_RED);
+        tft.fillRect(0, screenH - 20, screenW, 20, 0xF800);  // Red
+        tft.setTextColor(0xFFFF, 0xF800);  // White on Red
         tft.setTextSize(2);
         tft.setCursor(5, screenH - 18);
         tft.print(F("ALERT A"));
