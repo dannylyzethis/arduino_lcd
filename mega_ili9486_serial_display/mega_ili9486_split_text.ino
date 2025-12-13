@@ -113,8 +113,14 @@
 #include <Wire.h>      // I2C library
 #include <SPI.h>       // SPI library
 #include <EEPROM.h>    // Internal EEPROM library
+#include "MenuSystem.h"      // Touch menu system
+#include "MenuConfig.h"      // Menu structure definitions
 
 MCUFRIEND_kbv tft;
+
+// Menu system
+MenuManager* menuManager = NULL;
+bool menuActive = false;
 
 // Touchscreen pins (standard MCUFRIEND configuration for Mega)
 #define YP A3  // Y+ is on Analog3
@@ -635,6 +641,13 @@ void setup() {
   // Initialize I2C (Wire library)
   Wire.begin();
 
+  // Initialize menu system
+  menuManager = new MenuManager(&tft);
+  initMenus();
+  menuManager->begin(&mainMenu);
+  menuManager->setPosition(0, 0, screenW, screenH);
+  menuManager->setColors(0x0000, 0xFFFF, 0x07E0, 0x07FF, 0x39E7);
+
   // Startup message
   tft.setTextColor(0x07FF);  // Cyan
   tft.setTextSize(2);
@@ -663,7 +676,25 @@ void setup() {
 
 void loop() {
   // Process touch input
-  if (buttonsVisible) {
+  if (menuActive) {
+    // Menu is active, handle menu touches
+    TSPoint p = ts.getPoint();
+    pinMode(XM, OUTPUT);
+    pinMode(YP, OUTPUT);
+
+    if (p.z > MINPRESSURE && p.z < MAXPRESSURE) {
+      // Map touch coordinates
+      int16_t px = map(p.x, TS_MINX, TS_MAXX, 0, screenW);
+      int16_t py = map(p.y, TS_MINY, TS_MAXY, 0, screenH);
+
+      // Handle menu touch
+      if (menuManager) {
+        menuManager->handleTouch(px, py);
+      }
+
+      delay(200);  // Debounce
+    }
+  } else if (buttonsVisible) {
     checkTouch();
   }
 
@@ -1908,6 +1939,32 @@ void processCmd(String c) {
       hideButtons();
       Serial.println(F("OK:HIDEBTNS"));
 
+    } else if (c == "#MENU") {
+      // Show FPGA menu
+      if (menuManager) {
+        menuActive = true;
+        buttonsVisible = false;  // Hide buttons when menu is active
+        menuManager->show();
+        Serial.println(F("OK:MENU_SHOWN"));
+      }
+
+    } else if (c == "#MENUHIDE") {
+      // Hide menu and restore screen
+      menuActive = false;
+      tft.fillScreen(0);
+      drawDivider();
+      topPosX = topPosY = 0;
+      bottomPosX = 0;
+      bottomPosY = bottomMinY;
+      Serial.println(F("OK:MENU_HIDDEN"));
+
+    } else if (c == "#MENUBACK") {
+      // Go back in menu
+      if (menuActive && menuManager) {
+        menuManager->goBack();
+        Serial.println(F("OK:MENU_BACK"));
+      }
+
     } else if (c.startsWith("#TOUCHCAL")) {
       String param = c.substring(9);
       param.trim();
@@ -2255,6 +2312,16 @@ void help() {
   Serial.println(F("  #TOUCHCAL <minx> <maxx> <miny> <maxy>"));
   Serial.println(F("  #TOUCHTEST - Toggle touch test mode"));
   Serial.println(F("    Shows raw & mapped coordinates"));
+  Serial.println();
+  Serial.println(F("TOUCH MENU:"));
+  Serial.println(F("  #MENU - Show FPGA control menu"));
+  Serial.println(F("  #MENUHIDE - Hide menu"));
+  Serial.println(F("  #MENUBACK - Go back in menu"));
+  Serial.println(F("  Menu items:"));
+  Serial.println(F("    - Control Register (read/write)"));
+  Serial.println(F("    - Status Register"));
+  Serial.println(F("    - Temperature sensors"));
+  Serial.println(F("    - Firmware info"));
   Serial.println();
   Serial.println(F("GPIO (Pins 22-29):"));
   Serial.println(F("  #GPIOMODE <pin> <IN|INPU|OUT>"));
