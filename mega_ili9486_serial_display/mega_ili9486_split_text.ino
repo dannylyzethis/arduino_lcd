@@ -216,7 +216,7 @@ uint8_t customTermByte = 0xFF;  // Custom termination byte (default 0xFF)
 struct Button {
   uint16_t x, y, w, h;
   const char* label;
-  uint8_t cmdBytes[8];    // Bytes to send to FPGA
+  uint8_t cmdBytes[15];   // Bytes to send to FPGA (up to 15 bytes)
   uint8_t cmdLen;         // Number of bytes in command
   uint16_t color;
 };
@@ -283,14 +283,14 @@ AnalogRefMode analogRefMode = AREF_DEFAULT;  // Default to 5V reference
 // Data logging to EEPROM with circular buffer
 // Default EEPROM layout: [0-99] = config/reserved, [1000-4095] = log data
 // Configurable and write-protected
-uint16_t logStartAddr = 1000;    // Configurable log start address
+uint16_t logStartAddr = 2000;    // Configurable log start address (default: 2000-4095)
 uint16_t logEndAddr = 4095;      // Configurable log end address
 #define LOG_ENTRY_SIZE 8  // Timestamp(4) + Value(2) + Source(1) + Flags(1)
 
 bool loggingActive = false;
 unsigned long logInterval = 1000;  // milliseconds
 unsigned long lastLogTime = 0;
-uint16_t logWriteAddr = 1000;
+uint16_t logWriteAddr = 2000;
 uint16_t logEntryCount = 0;
 uint8_t logSource = 0;  // 0=A8, 1=A9, ... 15=GPIO_REG
 
@@ -304,8 +304,8 @@ struct ProtectZone {
 
 ProtectZone protectZones[MAX_PROTECT_ZONES] = {
   {0, 99, true},      // Zone 0: Config area (0-99) - protected by default
-  {0, 0, false},      // Zone 1: User-defined
-  {0, 0, false},      // Zone 2: User-defined
+  {100, 299, true},   // Zone 1: FPGA dedicated space (200 bytes)
+  {300, 499, true},   // Zone 2: User settings (200 bytes)
   {0, 0, false}       // Zone 3: User-defined
 };
 
@@ -319,6 +319,176 @@ bool isProtected(uint16_t addr) {
     }
   }
   return false;
+}
+
+// ========== CONFIGURATION SYSTEM ==========
+// EEPROM Memory Map:
+// 0x00-0x63 (0-99):     Configuration zone (protected)
+// 0x64-0x12B (100-299): FPGA zone (200 bytes, protected)
+// 0x12C-0x1F3 (300-499): User zone (200 bytes, protected)
+// 0x1F4-0x7CF (500-1999): Free space (1500 bytes)
+// 0x7D0-0xFFF (2000-4095): Data logging zone (3096 bytes)
+
+#define CONFIG_MAGIC 0xA5
+#define CONFIG_VERSION 1
+
+// EEPROM addresses for configuration
+#define ADDR_MAGIC 0
+#define ADDR_VERSION 1
+#define ADDR_ROTATION 2
+#define ADDR_FPGA1_BAUD 3
+#define ADDR_FPGA2_BAUD 4
+#define ADDR_FPGA3_BAUD 5
+#define ADDR_FPGA1_TERM 6
+#define ADDR_FPGA2_TERM 7
+#define ADDR_FPGA3_TERM 8
+#define ADDR_FPGA_SEL 9
+#define ADDR_FPGA1_STOP 10
+#define ADDR_FPGA2_STOP 11
+#define ADDR_FPGA3_STOP 12
+#define ADDR_FPGA1_RX 13
+#define ADDR_FPGA2_RX 14
+#define ADDR_FPGA3_RX 15
+#define ADDR_FPGA1_PARSE 16
+#define ADDR_FPGA2_PARSE 17
+#define ADDR_FPGA3_PARSE 18
+// 19-31: Reserved
+#define ADDR_BTN_UP 32      // 16 bytes: [0]=length, [1-15]=data
+#define ADDR_BTN_DOWN 48    // 16 bytes
+#define ADDR_BTN_LEFT 64    // 16 bytes
+#define ADDR_BTN_RIGHT 80   // 16 bytes
+// 96-99: Reserved
+
+#define ADDR_FPGA_ZONE 100    // FPGA dedicated space (200 bytes)
+#define ADDR_USER_ZONE 300    // User settings (200 bytes)
+
+// Button configuration structure
+struct ButtonConfig {
+  uint8_t length;      // Number of bytes to send (0-15)
+  uint8_t data[15];    // Button data bytes
+};
+
+ButtonConfig btnUp    = {2, {0x55, 0x50}};  // Default: "UP"
+ButtonConfig btnDown  = {2, {0x44, 0x4E}};  // Default: "DN"
+ButtonConfig btnLeft  = {2, {0x4C, 0x54}};  // Default: "LT"
+ButtonConfig btnRight = {2, {0x52, 0x54}};  // Default: "RT"
+
+// Save configuration to EEPROM
+void saveConfig() {
+  // Magic byte and version
+  EEPROM.write(ADDR_MAGIC, CONFIG_MAGIC);
+  EEPROM.write(ADDR_VERSION, CONFIG_VERSION);
+
+  // Display settings
+  EEPROM.write(ADDR_ROTATION, rotation);
+
+  // FPGA settings
+  EEPROM.write(ADDR_FPGA_SEL, fpgaSelected);
+  EEPROM.write(ADDR_FPGA1_BAUD, fpga1BaudIdx);
+  EEPROM.write(ADDR_FPGA2_BAUD, fpga2BaudIdx);
+  EEPROM.write(ADDR_FPGA3_BAUD, fpga3BaudIdx);
+  EEPROM.write(ADDR_FPGA1_TERM, fpga1TermByte);
+  EEPROM.write(ADDR_FPGA2_TERM, fpga2TermByte);
+  EEPROM.write(ADDR_FPGA3_TERM, fpga3TermByte);
+  EEPROM.write(ADDR_FPGA1_STOP, fpga1StopBits);
+  EEPROM.write(ADDR_FPGA2_STOP, fpga2StopBits);
+  EEPROM.write(ADDR_FPGA3_STOP, fpga3StopBits);
+  EEPROM.write(ADDR_FPGA1_RX, fpga1RxMode);
+  EEPROM.write(ADDR_FPGA2_RX, fpga2RxMode);
+  EEPROM.write(ADDR_FPGA3_RX, fpga3RxMode);
+  EEPROM.write(ADDR_FPGA1_PARSE, fpga1ParseMode);
+  EEPROM.write(ADDR_FPGA2_PARSE, fpga2ParseMode);
+  EEPROM.write(ADDR_FPGA3_PARSE, fpga3ParseMode);
+
+  // Button configurations
+  EEPROM.write(ADDR_BTN_UP, btnUp.length);
+  for (uint8_t i = 0; i < 15; i++) {
+    EEPROM.write(ADDR_BTN_UP + 1 + i, btnUp.data[i]);
+  }
+
+  EEPROM.write(ADDR_BTN_DOWN, btnDown.length);
+  for (uint8_t i = 0; i < 15; i++) {
+    EEPROM.write(ADDR_BTN_DOWN + 1 + i, btnDown.data[i]);
+  }
+
+  EEPROM.write(ADDR_BTN_LEFT, btnLeft.length);
+  for (uint8_t i = 0; i < 15; i++) {
+    EEPROM.write(ADDR_BTN_LEFT + 1 + i, btnLeft.data[i]);
+  }
+
+  EEPROM.write(ADDR_BTN_RIGHT, btnRight.length);
+  for (uint8_t i = 0; i < 15; i++) {
+    EEPROM.write(ADDR_BTN_RIGHT + 1 + i, btnRight.data[i]);
+  }
+}
+
+// Load configuration from EEPROM
+bool loadConfig() {
+  // Check magic byte
+  if (EEPROM.read(ADDR_MAGIC) != CONFIG_MAGIC) {
+    return false;  // No valid config
+  }
+
+  // Check version
+  uint8_t ver = EEPROM.read(ADDR_VERSION);
+  if (ver != CONFIG_VERSION) {
+    return false;  // Version mismatch
+  }
+
+  // Load display settings
+  rotation = EEPROM.read(ADDR_ROTATION);
+  if (rotation > 3) rotation = 0;
+
+  // Load FPGA settings
+  fpgaSelected = EEPROM.read(ADDR_FPGA_SEL);
+  if (fpgaSelected < 1 || fpgaSelected > 3) fpgaSelected = 1;
+
+  fpga1BaudIdx = EEPROM.read(ADDR_FPGA1_BAUD);
+  fpga2BaudIdx = EEPROM.read(ADDR_FPGA2_BAUD);
+  fpga3BaudIdx = EEPROM.read(ADDR_FPGA3_BAUD);
+
+  fpga1TermByte = EEPROM.read(ADDR_FPGA1_TERM);
+  fpga2TermByte = EEPROM.read(ADDR_FPGA2_TERM);
+  fpga3TermByte = EEPROM.read(ADDR_FPGA3_TERM);
+
+  fpga1StopBits = EEPROM.read(ADDR_FPGA1_STOP);
+  fpga2StopBits = EEPROM.read(ADDR_FPGA2_STOP);
+  fpga3StopBits = EEPROM.read(ADDR_FPGA3_STOP);
+
+  fpga1RxMode = EEPROM.read(ADDR_FPGA1_RX);
+  fpga2RxMode = EEPROM.read(ADDR_FPGA2_RX);
+  fpga3RxMode = EEPROM.read(ADDR_FPGA3_RX);
+
+  fpga1ParseMode = EEPROM.read(ADDR_FPGA1_PARSE);
+  fpga2ParseMode = EEPROM.read(ADDR_FPGA2_PARSE);
+  fpga3ParseMode = EEPROM.read(ADDR_FPGA3_PARSE);
+
+  // Load button configurations
+  btnUp.length = EEPROM.read(ADDR_BTN_UP);
+  if (btnUp.length > 15) btnUp.length = 15;
+  for (uint8_t i = 0; i < 15; i++) {
+    btnUp.data[i] = EEPROM.read(ADDR_BTN_UP + 1 + i);
+  }
+
+  btnDown.length = EEPROM.read(ADDR_BTN_DOWN);
+  if (btnDown.length > 15) btnDown.length = 15;
+  for (uint8_t i = 0; i < 15; i++) {
+    btnDown.data[i] = EEPROM.read(ADDR_BTN_DOWN + 1 + i);
+  }
+
+  btnLeft.length = EEPROM.read(ADDR_BTN_LEFT);
+  if (btnLeft.length > 15) btnLeft.length = 15;
+  for (uint8_t i = 0; i < 15; i++) {
+    btnLeft.data[i] = EEPROM.read(ADDR_BTN_LEFT + 1 + i);
+  }
+
+  btnRight.length = EEPROM.read(ADDR_BTN_RIGHT);
+  if (btnRight.length > 15) btnRight.length = 15;
+  for (uint8_t i = 0; i < 15; i++) {
+    btnRight.data[i] = EEPROM.read(ADDR_BTN_RIGHT + 1 + i);
+  }
+
+  return true;
 }
 
 // ========== WAVEFORM GENERATOR ==========
@@ -354,6 +524,16 @@ void pulseISR() {
 
 void setup() {
   Serial.begin(115200);      // USB/PC
+
+  // Load configuration from EEPROM if available
+  bool configLoaded = loadConfig();
+  if (configLoaded) {
+    Serial.println(F("[CONFIG] Loaded from EEPROM"));
+  } else {
+    Serial.println(F("[CONFIG] Using defaults (no saved config)"));
+  }
+
+  // Apply FPGA baud rates from config
   Serial1.begin(fpga1Baud);  // FPGA1
   Serial2.begin(fpga2Baud);  // FPGA2
   Serial3.begin(fpga3Baud);  // FPGA3
@@ -363,7 +543,7 @@ void setup() {
   Serial.println(ID, HEX);
 
   tft.begin(ID);
-  tft.setRotation(0);
+  tft.setRotation(rotation);  // Apply rotation from config
   screenW = tft.width();
   screenH = tft.height();
 
@@ -1495,6 +1675,27 @@ void processCmd(String c) {
     } else if (c == "#FREQSTOP") {
       handleFreqStop();
 
+    } else if (c == "#CONFIGSAVE") {
+      handleConfigSave();
+
+    } else if (c == "#CONFIGLOAD") {
+      handleConfigLoad();
+
+    } else if (c == "#CONFIGRESET") {
+      handleConfigReset();
+
+    } else if (c == "#CONFIGSHOW") {
+      handleConfigShow();
+
+    } else if (c.startsWith("#BTNCONFIG ")) {
+      handleBtnConfig(c.substring(11));
+
+    } else if (c.startsWith("#FPGAWRITE ")) {
+      handleFPGAWrite(c.substring(11));
+
+    } else if (c.startsWith("#FPGAREAD ")) {
+      handleFPGARead(c.substring(10));
+
     } else if (c == "#HELP") {
       help();
 
@@ -1993,6 +2194,25 @@ void help() {
   Serial.println(F("  #FREQMON <pin> <duration>"));
   Serial.println(F("    Continuous monitoring"));
   Serial.println(F("  #FREQSTOP - Stop monitoring"));
+  Serial.println();
+  Serial.println(F("CONFIGURATION SYSTEM:"));
+  Serial.println(F("  #CONFIGSAVE - Save settings to EEPROM"));
+  Serial.println(F("  #CONFIGLOAD - Load settings from EEPROM"));
+  Serial.println(F("  #CONFIGRESET - Reset to defaults"));
+  Serial.println(F("  #CONFIGSHOW - Show all settings"));
+  Serial.println(F("  Saves: rotation, FPGA baud/term, buttons"));
+  Serial.println();
+  Serial.println(F("BUTTON CONFIGURATION:"));
+  Serial.println(F("  #BTNCONFIG <btn> <len> <bytes...>"));
+  Serial.println(F("    btn: UP, DOWN, LEFT, RIGHT"));
+  Serial.println(F("    len: 1-15 bytes"));
+  Serial.println(F("  #BTNCONFIG <btn> ? - Query button"));
+  Serial.println(F("  Example: #BTNCONFIG UP 3 0xAA 0xBB 0xCC"));
+  Serial.println();
+  Serial.println(F("FPGA EEPROM ZONE (100-299):"));
+  Serial.println(F("  #FPGAWRITE <addr> <bytes...>"));
+  Serial.println(F("  #FPGAREAD <addr> [count]"));
+  Serial.println(F("  200 bytes for FPGA data exchange"));
   Serial.println();
   Serial.println(F("OTHER:"));
   Serial.println(F("  #CLRALL - Clear both screens"));
@@ -2558,48 +2778,52 @@ void initButtons() {
   uint16_t btnY = screenH - btnHeight - 2;  // Use screenH, not bottomMaxY!
   buttonTextY = btnY - 2;  // Text area ends just above buttons
 
-  // UP button - sends bytes: 0x55 0x50 ("UP")
+  // UP button - uses btnUp config
   buttons[0].x = 5;
   buttons[0].y = btnY;
   buttons[0].w = btnWidth;
   buttons[0].h = btnHeight;
   buttons[0].label = "UP";
-  buttons[0].cmdBytes[0] = 0x55;  // 'U'
-  buttons[0].cmdBytes[1] = 0x50;  // 'P'
-  buttons[0].cmdLen = 2;
+  buttons[0].cmdLen = btnUp.length;
+  for (uint8_t i = 0; i < btnUp.length && i < 15; i++) {
+    buttons[0].cmdBytes[i] = btnUp.data[i];
+  }
   buttons[0].color = 0x07E0;  // Green
 
-  // DOWN button - sends bytes: 0x44 0x4E ("DN")
+  // DOWN button - uses btnDown config
   buttons[1].x = 5 + btnWidth + 3;
   buttons[1].y = btnY;
   buttons[1].w = btnWidth;
   buttons[1].h = btnHeight;
   buttons[1].label = "DN";
-  buttons[1].cmdBytes[0] = 0x44;  // 'D'
-  buttons[1].cmdBytes[1] = 0x4E;  // 'N'
-  buttons[1].cmdLen = 2;
+  buttons[1].cmdLen = btnDown.length;
+  for (uint8_t i = 0; i < btnDown.length && i < 15; i++) {
+    buttons[1].cmdBytes[i] = btnDown.data[i];
+  }
   buttons[1].color = 0x07E0;  // Green
 
-  // LEFT button - sends bytes: 0x4C 0x54 ("LT")
+  // LEFT button - uses btnLeft config
   buttons[2].x = 5 + (btnWidth + 3) * 2;
   buttons[2].y = btnY;
   buttons[2].w = btnWidth;
   buttons[2].h = btnHeight;
   buttons[2].label = "LT";
-  buttons[2].cmdBytes[0] = 0x4C;  // 'L'
-  buttons[2].cmdBytes[1] = 0x54;  // 'T'
-  buttons[2].cmdLen = 2;
+  buttons[2].cmdLen = btnLeft.length;
+  for (uint8_t i = 0; i < btnLeft.length && i < 15; i++) {
+    buttons[2].cmdBytes[i] = btnLeft.data[i];
+  }
   buttons[2].color = 0x07E0;  // Green
 
-  // RIGHT button - sends bytes: 0x52 0x54 ("RT")
+  // RIGHT button - uses btnRight config
   buttons[3].x = 5 + (btnWidth + 3) * 3;
   buttons[3].y = btnY;
   buttons[3].w = btnWidth;
   buttons[3].h = btnHeight;
   buttons[3].label = "RT";
-  buttons[3].cmdBytes[0] = 0x52;  // 'R'
-  buttons[3].cmdBytes[1] = 0x54;  // 'T'
-  buttons[3].cmdLen = 2;
+  buttons[3].cmdLen = btnRight.length;
+  for (uint8_t i = 0; i < btnRight.length && i < 15; i++) {
+    buttons[3].cmdBytes[i] = btnRight.data[i];
+  }
   buttons[3].color = 0x07E0;  // Green
 }
 
@@ -3738,6 +3962,305 @@ void handleEEPROMProtect(String params) {
   Serial.print(start, HEX);
   Serial.print(F(" - 0x"));
   Serial.println(end, HEX);
+}
+
+// ========== CONFIGURATION COMMAND HANDLERS ==========
+
+void handleConfigSave() {
+  saveConfig();
+  Serial.println(F("CONFIG_SAVED"));
+}
+
+void handleConfigLoad() {
+  if (loadConfig()) {
+    // Apply rotation
+    tft.setRotation(rotation);
+
+    // Reinitialize buttons with new config
+    initButtons();
+
+    Serial.println(F("CONFIG_LOADED"));
+    Serial.print(F("Rotation: "));
+    Serial.println(rotation);
+  } else {
+    Serial.println(F("ERR:NO_CONFIG_FOUND"));
+  }
+}
+
+void handleConfigReset() {
+  // Reset to defaults
+  rotation = 0;
+  fpgaSelected = 1;
+
+  // Reset button configs to defaults
+  btnUp.length = 2;
+  btnUp.data[0] = 0x55;
+  btnUp.data[1] = 0x50;
+
+  btnDown.length = 2;
+  btnDown.data[0] = 0x44;
+  btnDown.data[1] = 0x4E;
+
+  btnLeft.length = 2;
+  btnLeft.data[0] = 0x4C;
+  btnLeft.data[1] = 0x54;
+
+  btnRight.length = 2;
+  btnRight.data[0] = 0x52;
+  btnRight.data[1] = 0x54;
+
+  // Reinitialize buttons
+  initButtons();
+
+  Serial.println(F("CONFIG_RESET"));
+}
+
+void handleConfigShow() {
+  Serial.println(F("=== CONFIGURATION ==="));
+
+  // Display settings
+  Serial.print(F("Rotation: "));
+  Serial.println(rotation);
+
+  // FPGA settings
+  Serial.print(F("FPGA Selected: "));
+  Serial.println(fpgaSelected);
+  Serial.print(F("FPGA1 Baud: "));
+  Serial.println(validBauds[fpga1BaudIdx]);
+  Serial.print(F("FPGA2 Baud: "));
+  Serial.println(validBauds[fpga2BaudIdx]);
+  Serial.print(F("FPGA3 Baud: "));
+  Serial.println(validBauds[fpga3BaudIdx]);
+
+  // Button configurations
+  Serial.println(F("Button Configs:"));
+  Serial.print(F("  UP ["));
+  Serial.print(btnUp.length);
+  Serial.print(F("]: "));
+  for (uint8_t i = 0; i < btnUp.length; i++) {
+    if (i > 0) Serial.print(F(" "));
+    Serial.print(F("0x"));
+    if (btnUp.data[i] < 16) Serial.print(F("0"));
+    Serial.print(btnUp.data[i], HEX);
+  }
+  Serial.println();
+
+  Serial.print(F("  DOWN ["));
+  Serial.print(btnDown.length);
+  Serial.print(F("]: "));
+  for (uint8_t i = 0; i < btnDown.length; i++) {
+    if (i > 0) Serial.print(F(" "));
+    Serial.print(F("0x"));
+    if (btnDown.data[i] < 16) Serial.print(F("0"));
+    Serial.print(btnDown.data[i], HEX);
+  }
+  Serial.println();
+
+  Serial.print(F("  LEFT ["));
+  Serial.print(btnLeft.length);
+  Serial.print(F("]: "));
+  for (uint8_t i = 0; i < btnLeft.length; i++) {
+    if (i > 0) Serial.print(F(" "));
+    Serial.print(F("0x"));
+    if (btnLeft.data[i] < 16) Serial.print(F("0"));
+    Serial.print(btnLeft.data[i], HEX);
+  }
+  Serial.println();
+
+  Serial.print(F("  RIGHT ["));
+  Serial.print(btnRight.length);
+  Serial.print(F("]: "));
+  for (uint8_t i = 0; i < btnRight.length; i++) {
+    if (i > 0) Serial.print(F(" "));
+    Serial.print(F("0x"));
+    if (btnRight.data[i] < 16) Serial.print(F("0"));
+    Serial.print(btnRight.data[i], HEX);
+  }
+  Serial.println();
+}
+
+void handleBtnConfig(String params) {
+  // #BTNCONFIG <btn> <len> <bytes...>
+  // #BTNCONFIG <btn> ?
+
+  int sp1 = params.indexOf(' ');
+  if (sp1 == -1) {
+    Serial.println(F("ERR:FORMAT #BTNCONFIG <UP|DOWN|LEFT|RIGHT> <len> <bytes...>"));
+    return;
+  }
+
+  String btnName = params.substring(0, sp1);
+  btnName.toUpperCase();
+
+  ButtonConfig* targetBtn = NULL;
+  if (btnName == "UP") targetBtn = &btnUp;
+  else if (btnName == "DOWN") targetBtn = &btnDown;
+  else if (btnName == "LEFT") targetBtn = &btnLeft;
+  else if (btnName == "RIGHT") targetBtn = &btnRight;
+  else {
+    Serial.println(F("ERR:UNKNOWN_BTN (use UP, DOWN, LEFT, RIGHT)"));
+    return;
+  }
+
+  String rest = params.substring(sp1 + 1);
+  rest.trim();
+
+  // Query mode
+  if (rest == "?") {
+    Serial.print(btnName);
+    Serial.print(F(" ["));
+    Serial.print(targetBtn->length);
+    Serial.print(F("]: "));
+    for (uint8_t i = 0; i < targetBtn->length; i++) {
+      if (i > 0) Serial.print(F(" "));
+      Serial.print(F("0x"));
+      if (targetBtn->data[i] < 16) Serial.print(F("0"));
+      Serial.print(targetBtn->data[i], HEX);
+    }
+    Serial.println();
+    return;
+  }
+
+  // Configure mode
+  int sp2 = rest.indexOf(' ');
+  if (sp2 == -1) {
+    Serial.println(F("ERR:FORMAT #BTNCONFIG <btn> <len> <bytes...>"));
+    return;
+  }
+
+  uint8_t len = rest.substring(0, sp2).toInt();
+  if (len == 0 || len > 15) {
+    Serial.println(F("ERR:LENGTH (1-15)"));
+    return;
+  }
+
+  // Parse bytes
+  String bytesStr = rest.substring(sp2 + 1);
+  targetBtn->length = len;
+
+  int byteIdx = 0;
+  int pos = 0;
+  while (pos < bytesStr.length() && byteIdx < len) {
+    // Skip whitespace
+    while (pos < bytesStr.length() && bytesStr.charAt(pos) == ' ') pos++;
+    if (pos >= bytesStr.length()) break;
+
+    // Find next space or end
+    int nextSpace = bytesStr.indexOf(' ', pos);
+    if (nextSpace == -1) nextSpace = bytesStr.length();
+
+    String byteStr = bytesStr.substring(pos, nextSpace);
+    targetBtn->data[byteIdx++] = parseHexOrDec(byteStr);
+
+    pos = nextSpace + 1;
+  }
+
+  if (byteIdx < len) {
+    Serial.println(F("ERR:NOT_ENOUGH_BYTES"));
+    return;
+  }
+
+  // Reinitialize buttons
+  initButtons();
+
+  Serial.print(btnName);
+  Serial.println(F(" CONFIGURED"));
+}
+
+void handleFPGAWrite(String params) {
+  // #FPGAWRITE <addr> <value...>
+  // Write to FPGA zone (100-299)
+
+  int sp = params.indexOf(' ');
+  if (sp == -1) {
+    Serial.println(F("ERR:FORMAT #FPGAWRITE <addr> <value...>"));
+    return;
+  }
+
+  uint16_t addr = parseHexOrDec(params.substring(0, sp));
+
+  // Validate FPGA zone
+  if (addr < ADDR_FPGA_ZONE || addr >= ADDR_USER_ZONE) {
+    Serial.print(F("ERR:FPGA_ZONE ("));
+    Serial.print(ADDR_FPGA_ZONE);
+    Serial.print(F("-"));
+    Serial.print(ADDR_USER_ZONE - 1);
+    Serial.println(F(")"));
+    return;
+  }
+
+  // Parse bytes to write
+  String bytesStr = params.substring(sp + 1);
+  int pos = 0;
+  uint16_t writeAddr = addr;
+  uint8_t bytesWritten = 0;
+
+  while (pos < bytesStr.length() && writeAddr < ADDR_USER_ZONE) {
+    // Skip whitespace
+    while (pos < bytesStr.length() && bytesStr.charAt(pos) == ' ') pos++;
+    if (pos >= bytesStr.length()) break;
+
+    // Find next space or end
+    int nextSpace = bytesStr.indexOf(' ', pos);
+    if (nextSpace == -1) nextSpace = bytesStr.length();
+
+    String byteStr = bytesStr.substring(pos, nextSpace);
+    uint8_t value = parseHexOrDec(byteStr);
+
+    // Temporarily disable protection to write to FPGA zone
+    protectZones[1].enabled = false;
+    EEPROM.write(writeAddr++, value);
+    protectZones[1].enabled = true;
+
+    bytesWritten++;
+    pos = nextSpace + 1;
+  }
+
+  Serial.print(F("FPGA_WRITE: "));
+  Serial.print(bytesWritten);
+  Serial.print(F(" bytes at 0x"));
+  Serial.println(addr, HEX);
+}
+
+void handleFPGARead(String params) {
+  // #FPGAREAD <addr> [count]
+  // Read from FPGA zone (100-299)
+
+  int sp = params.indexOf(' ');
+  uint16_t addr;
+  uint8_t count = 1;
+
+  if (sp == -1) {
+    addr = parseHexOrDec(params);
+  } else {
+    addr = parseHexOrDec(params.substring(0, sp));
+    count = params.substring(sp + 1).toInt();
+    if (count == 0) count = 1;
+    if (count > 200) count = 200;
+  }
+
+  // Validate FPGA zone
+  if (addr < ADDR_FPGA_ZONE || addr >= ADDR_USER_ZONE) {
+    Serial.print(F("ERR:FPGA_ZONE ("));
+    Serial.print(ADDR_FPGA_ZONE);
+    Serial.print(F("-"));
+    Serial.print(ADDR_USER_ZONE - 1);
+    Serial.println(F(")"));
+    return;
+  }
+
+  Serial.print(F("FPGA[0x"));
+  Serial.print(addr, HEX);
+  Serial.print(F("]: "));
+
+  for (uint8_t i = 0; i < count && (addr + i) < ADDR_USER_ZONE; i++) {
+    if (i > 0) Serial.print(F(" "));
+    uint8_t value = EEPROM.read(addr + i);
+    Serial.print(F("0x"));
+    if (value < 16) Serial.print(F("0"));
+    Serial.print(value, HEX);
+  }
+  Serial.println();
 }
 
 // ========== WAVEFORM GENERATOR FUNCTIONS ==========

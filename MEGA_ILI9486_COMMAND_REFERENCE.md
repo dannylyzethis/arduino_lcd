@@ -1591,17 +1591,240 @@ Advanced visualization widgets for creating dynamic dashboards and monitoring in
 
 ---
 
+## Configuration System
+
+### Overview
+Persistent storage of system settings, FPGA parameters, and custom button configurations in EEPROM. Settings are automatically loaded on power-up and can be saved/restored at any time.
+
+### Configurable Settings
+
+**Display Settings:**
+- Screen rotation (0-3)
+
+**FPGA Settings:**
+- Baud rates for Serial1, Serial2, Serial3
+- Termination bytes for each FPGA port
+- Stop bits configuration
+- RX and parse modes
+
+**Button Settings:**
+- Custom byte sequences for UP, DOWN, LEFT, RIGHT buttons
+- Configurable length (1-15 bytes per button)
+- Allows custom control commands
+
+### Configuration Commands
+
+#### Save Configuration
+```
+#CONFIGSAVE    Save current settings to EEPROM
+```
+
+**What gets saved:**
+- Display rotation
+- All FPGA serial port settings
+- Custom button byte sequences
+
+**Example:**
+```
+#ROT 1                   Change rotation
+#FPGA1BAUD 115200        Change FPGA1 baud rate
+#BTNCONFIG UP 3 0xAA 0xBB 0xCC    Custom button bytes
+#CONFIGSAVE              Save all settings
+```
+
+#### Load Configuration
+```
+#CONFIGLOAD    Load settings from EEPROM
+```
+
+**Response:**
+```
+CONFIG_LOADED
+Rotation: 1
+```
+
+**Note:** Configuration is automatically loaded on power-up/reset
+
+#### Reset to Defaults
+```
+#CONFIGRESET    Reset all settings to factory defaults
+```
+
+**Defaults:**
+- Rotation: 0
+- FPGA selected: 1
+- Button UP: 0x55 0x50 ("UP")
+- Button DOWN: 0x44 0x4E ("DN")
+- Button LEFT: 0x4C 0x54 ("LT")
+- Button RIGHT: 0x52 0x54 ("RT")
+
+#### Show Configuration
+```
+#CONFIGSHOW    Display all current settings
+```
+
+**Example Output:**
+```
+=== CONFIGURATION ===
+Rotation: 1
+FPGA Selected: 1
+FPGA1 Baud: 115200
+FPGA2 Baud: 9600
+FPGA3 Baud: 9600
+Button Configs:
+  UP [2]: 0x55 0x50
+  DOWN [2]: 0x44 0x4E
+  LEFT [2]: 0x4C 0x54
+  RIGHT [2]: 0x52 0x54
+```
+
+### Button Configuration
+
+#### Configure Button Bytes
+```
+#BTNCONFIG <button> <length> <byte1> [byte2] ...    Set button command
+#BTNCONFIG <button> ?                                Query button config
+```
+
+**Parameters:**
+- `button` - Button name: UP, DOWN, LEFT, or RIGHT
+- `length` - Number of bytes to send (1-15)
+- `byte1-15` - Hex or decimal byte values
+
+**Examples:**
+```
+# Single byte command
+#BTNCONFIG UP 1 0xFF
+
+# Multi-byte command (3 bytes)
+#BTNCONFIG DOWN 3 0xAA 0xBB 0xCC
+
+# Long command (8 bytes)
+#BTNCONFIG LEFT 8 0x01 0x02 0x03 0x04 0x05 0x06 0x07 0x08
+
+# Query button configuration
+#BTNCONFIG UP ?
+# Response: UP [3]: 0xAA 0xBB 0xCC
+```
+
+**Notes:**
+- Changes take effect immediately
+- Use #CONFIGSAVE to make changes persistent
+- Buttons send bytes to currently selected FPGA port
+- Termination byte is appended automatically
+
+### FPGA EEPROM Zone
+
+Dedicated 200-byte zone (addresses 100-299) for FPGA data exchange.
+
+#### Write to FPGA Zone
+```
+#FPGAWRITE <addr> <byte1> [byte2] ...    Write to FPGA zone
+```
+
+**Parameters:**
+- `addr` - Address (100-299)
+- `byte1-N` - Data bytes to write
+
+**Examples:**
+```
+#FPGAWRITE 100 0xFF 0xAA 0xBB    Write 3 bytes starting at 100
+#FPGAWRITE 150 65 66 67          Write ASCII "ABC" at 150
+```
+
+#### Read from FPGA Zone
+```
+#FPGAREAD <addr> [count]    Read from FPGA zone
+```
+
+**Parameters:**
+- `addr` - Address (100-299)
+- `count` - Number of bytes to read (default: 1)
+
+**Examples:**
+```
+#FPGAREAD 100                Read 1 byte from address 100
+#FPGAREAD 100 10             Read 10 bytes from address 100
+```
+
+**Response:**
+```
+FPGA[0x64]: 0xFF 0xAA 0xBB 0xCC 0xDD ...
+```
+
+### Configuration Usage Examples
+
+#### Power-On Configuration
+```
+# On first boot
+#CONFIGSHOW              Check current settings
+# Response: CONFIG_RESET (using defaults)
+
+# Configure as needed
+#ROT 1
+#FPGA1BAUD 115200
+#BTNCONFIG UP 3 0x01 0x02 0x03
+
+# Save configuration
+#CONFIGSAVE
+
+# On next power-up, settings are automatically restored
+# [CONFIG] Loaded from EEPROM
+```
+
+#### Custom Control Panel
+```
+# Configure buttons for specific FPGA commands
+#BTNCONFIG UP 4 0x10 0x00 0xFF 0xAA       Start command
+#BTNCONFIG DOWN 4 0x10 0x01 0xFF 0xAA     Stop command
+#BTNCONFIG LEFT 3 0x20 0x00 0x01          Mode 1
+#BTNCONFIG RIGHT 3 0x20 0x00 0x02         Mode 2
+
+# Save button configuration
+#CONFIGSAVE
+
+# Test buttons
+#SHOWBTNS
+# Touch buttons now send custom commands
+```
+
+#### FPGA Data Exchange
+```
+# Arduino writes configuration to FPGA zone
+#FPGAWRITE 100 0x01 0x02 0x03 0x04
+
+# FPGA reads from zone via serial commands
+# (FPGA sends: #FPGAREAD 100 4)
+
+# FPGA writes results to zone
+# (FPGA sends: #FPGAWRITE 150 0xAA 0xBB)
+
+# Arduino reads results
+#FPGAREAD 150 2
+# Response: FPGA[0x96]: 0xAA 0xBB
+```
+
+---
+
 ## Data Logging System
 
 ### Overview
 Automatic data logging to internal EEPROM with circular buffer management. Stores timestamped sensor readings or GPIO states for later analysis.
 
 ### EEPROM Memory Map
-- **Addresses 0-99:** Reserved for configuration (protected by default)
-- **Addresses 1000-4095:** Default log data zone (circular buffer)
-- **Log Entry Size:** 8 bytes per entry
-- **Maximum Entries:** ~387 entries (with default zone)
-- **Note:** Log zone is configurable via #LOGZONE command
+- **Addresses 0-99:** Configuration zone (protected by default)
+  - System settings (rotation, FPGA baud rates, termination bytes)
+  - Button byte sequences (customizable, up to 15 bytes each)
+- **Addresses 100-299:** FPGA dedicated zone (200 bytes, protected)
+  - Reserved for FPGA data exchange
+  - Access via #FPGAWRITE and #FPGAREAD commands
+- **Addresses 300-499:** User settings zone (200 bytes, protected)
+  - Reserved for user-defined data
+- **Addresses 500-1999:** Free space (1500 bytes, unprotected)
+- **Addresses 2000-4095:** Data logging zone (3096 bytes, circular buffer)
+  - Default log zone (configurable via #LOGZONE)
+  - Log Entry Size: 8 bytes per entry
+  - Maximum Entries: ~387 entries (with default zone)
 
 ### Log Entry Format
 Each entry contains:
