@@ -311,6 +311,19 @@ const uint8_t PROGMEM sineLUT[32] = {
     0,   2,  10,  22,  38,  57,  79, 103
 };
 
+// ========== PULSE/FREQUENCY MEASUREMENT ==========
+// Continuous frequency monitoring
+int8_t freqMonPin = -1;           // Pin for frequency monitoring (-1 = disabled)
+unsigned long freqMonDuration = 1000;  // Measurement window (ms)
+unsigned long freqMonLastUpdate = 0;
+volatile unsigned long pulseCount = 0;
+bool freqMonActive = false;
+
+// Interrupt handler for pulse counting
+void pulseISR() {
+  pulseCount++;
+}
+
 void setup() {
   Serial.begin(115200);      // USB/PC
   Serial1.begin(fpga1Baud);  // FPGA1
@@ -395,6 +408,11 @@ void loop() {
   // Handle waveform generation
   if (waveActive) {
     updateWaveform();
+  }
+
+  // Handle frequency monitoring
+  if (freqMonActive) {
+    updateFreqMonitor();
   }
 
   if (cmdReady) {
@@ -1425,6 +1443,18 @@ void processCmd(String c) {
     } else if (c == "#WAVESTOP") {
       handleWaveStop();
 
+    } else if (c.startsWith("#PULSEIN ")) {
+      handlePulseIn(c.substring(9));
+
+    } else if (c.startsWith("#FREQCOUNT ")) {
+      handleFreqCount(c.substring(11));
+
+    } else if (c.startsWith("#FREQMON ")) {
+      handleFreqMon(c.substring(9));
+
+    } else if (c == "#FREQSTOP") {
+      handleFreqStop();
+
     } else if (c == "#HELP") {
       help();
 
@@ -1908,6 +1938,16 @@ void help() {
   Serial.println(F("    freq: 1-10000 Hz"));
   Serial.println(F("    PWM pins: 2-13, 44-46"));
   Serial.println(F("  #WAVESTOP - Stop waveform"));
+  Serial.println();
+  Serial.println(F("PULSE/FREQUENCY MEASUREMENT:"));
+  Serial.println(F("  #PULSEIN <pin> <state> <timeout>"));
+  Serial.println(F("    state: HIGH or LOW"));
+  Serial.println(F("    timeout: microseconds"));
+  Serial.println(F("  #FREQCOUNT <pin> <duration>"));
+  Serial.println(F("    duration: milliseconds"));
+  Serial.println(F("  #FREQMON <pin> <duration>"));
+  Serial.println(F("    Continuous monitoring"));
+  Serial.println(F("  #FREQSTOP - Stop monitoring"));
   Serial.println();
   Serial.println(F("OTHER:"));
   Serial.println(F("  #CLRALL - Clear both screens"));
@@ -3620,4 +3660,224 @@ void handleWaveStop() {
   }
   waveActive = false;
   Serial.println(F("WAVE_STOPPED"));
+}
+
+// ========== PULSE/FREQUENCY MEASUREMENT FUNCTIONS ==========
+
+// Measure pulse width using pulseIn()
+void handlePulseIn(String params) {
+  // Parse: <pin> <state> <timeout>
+  int vals[3];
+  int count = 0;
+  int lastPos = 0;
+  uint8_t state = HIGH;
+
+  for (int i = 0; i <= params.length() && count < 3; i++) {
+    if (i == params.length() || params[i] == ' ') {
+      if (i > lastPos) {
+        String token = params.substring(lastPos, i);
+        token.toUpperCase();
+
+        if (count == 1) {  // State parameter
+          if (token == "HIGH" || token == "1") state = HIGH;
+          else if (token == "LOW" || token == "0") state = LOW;
+          else vals[count] = token.toInt();  // Allow numeric
+          count++;
+        } else {
+          vals[count++] = token.toInt();
+        }
+      }
+      lastPos = i + 1;
+    }
+  }
+
+  if (count < 3) {
+    Serial.println(F("ERR:FORMAT #PULSEIN <pin> <state> <timeout>"));
+    Serial.println(F("  state: HIGH, LOW, 1, or 0"));
+    Serial.println(F("  timeout: microseconds (max 3000000)"));
+    return;
+  }
+
+  uint8_t pin = vals[0];
+  unsigned long timeout = vals[2];
+
+  if (timeout > 3000000UL) {
+    Serial.println(F("ERR:TIMEOUT_MAX_3000000"));
+    return;
+  }
+
+  // Configure pin as input
+  pinMode(pin, INPUT);
+
+  // Measure pulse
+  unsigned long duration = pulseIn(pin, state, timeout);
+
+  // Report result
+  Serial.print(F("PULSE_IN: Pin="));
+  Serial.print(pin);
+  Serial.print(F(", State="));
+  Serial.print(state == HIGH ? F("HIGH") : F("LOW"));
+  Serial.print(F(", Duration="));
+  Serial.print(duration);
+  Serial.println(F("us"));
+
+  if (duration == 0) {
+    Serial.println(F("NOTE: Timeout or no pulse detected"));
+  }
+}
+
+// Count pulses over a duration and calculate frequency
+void handleFreqCount(String params) {
+  // Parse: <pin> <duration>
+  int vals[2];
+  int count = 0;
+  int lastPos = 0;
+
+  for (int i = 0; i <= params.length() && count < 2; i++) {
+    if (i == params.length() || params[i] == ' ') {
+      if (i > lastPos) {
+        vals[count++] = params.substring(lastPos, i).toInt();
+      }
+      lastPos = i + 1;
+    }
+  }
+
+  if (count < 2) {
+    Serial.println(F("ERR:FORMAT #FREQCOUNT <pin> <duration>"));
+    Serial.println(F("  duration: milliseconds (10-10000)"));
+    return;
+  }
+
+  uint8_t pin = vals[0];
+  unsigned long duration = vals[1];
+
+  if (duration < 10 || duration > 10000) {
+    Serial.println(F("ERR:DURATION_RANGE (10-10000 ms)"));
+    return;
+  }
+
+  // Configure pin as input
+  pinMode(pin, INPUT);
+
+  // Count rising edges
+  unsigned long startTime = millis();
+  unsigned long count_pulses = 0;
+  uint8_t lastState = digitalRead(pin);
+
+  while (millis() - startTime < duration) {
+    uint8_t currentState = digitalRead(pin);
+    if (currentState == HIGH && lastState == LOW) {
+      count_pulses++;
+    }
+    lastState = currentState;
+  }
+
+  // Calculate frequency
+  float actualDuration = millis() - startTime;
+  float frequency = (count_pulses * 1000.0) / actualDuration;
+
+  // Report result
+  Serial.print(F("FREQ_COUNT: Pin="));
+  Serial.print(pin);
+  Serial.print(F(", Pulses="));
+  Serial.print(count_pulses);
+  Serial.print(F(", Duration="));
+  Serial.print((unsigned long)actualDuration);
+  Serial.print(F("ms, Freq="));
+  Serial.print(frequency, 2);
+  Serial.println(F("Hz"));
+}
+
+// Start continuous frequency monitoring using interrupts
+void handleFreqMon(String params) {
+  // Parse: <pin> <duration>
+  int vals[2];
+  int count = 0;
+  int lastPos = 0;
+
+  for (int i = 0; i <= params.length() && count < 2; i++) {
+    if (i == params.length() || params[i] == ' ') {
+      if (i > lastPos) {
+        vals[count++] = params.substring(lastPos, i).toInt();
+      }
+      lastPos = i + 1;
+    }
+  }
+
+  if (count < 2) {
+    Serial.println(F("ERR:FORMAT #FREQMON <pin> <duration>"));
+    Serial.println(F("  duration: measurement window (100-10000 ms)"));
+    Serial.println(F("  Interrupt pins: 2, 3, 18-21"));
+    return;
+  }
+
+  uint8_t pin = vals[0];
+  freqMonDuration = vals[1];
+
+  if (freqMonDuration < 100 || freqMonDuration > 10000) {
+    Serial.println(F("ERR:DURATION_RANGE (100-10000 ms)"));
+    return;
+  }
+
+  // Check if pin supports interrupts (Mega: 2, 3, 18, 19, 20, 21)
+  uint8_t interruptNum = digitalPinToInterrupt(pin);
+  if (interruptNum == NOT_AN_INTERRUPT) {
+    Serial.println(F("ERR:PIN_NO_INTERRUPT"));
+    Serial.println(F("Interrupt pins: 2, 3, 18, 19, 20, 21"));
+    return;
+  }
+
+  // Stop any existing monitoring
+  if (freqMonActive) {
+    detachInterrupt(digitalPinToInterrupt(freqMonPin));
+  }
+
+  // Configure pin and interrupt
+  freqMonPin = pin;
+  pinMode(freqMonPin, INPUT);
+  pulseCount = 0;
+  freqMonLastUpdate = millis();
+  freqMonActive = true;
+
+  attachInterrupt(interruptNum, pulseISR, RISING);
+
+  Serial.print(F("FREQ_MON_START: Pin="));
+  Serial.print(freqMonPin);
+  Serial.print(F(", Window="));
+  Serial.print(freqMonDuration);
+  Serial.println(F("ms"));
+}
+
+// Update frequency monitor (called from loop)
+void updateFreqMonitor() {
+  unsigned long now = millis();
+
+  if (now - freqMonLastUpdate >= freqMonDuration) {
+    // Calculate frequency
+    float actualDuration = now - freqMonLastUpdate;
+    float frequency = (pulseCount * 1000.0) / actualDuration;
+
+    // Report
+    Serial.print(F("FREQ: "));
+    Serial.print(frequency, 2);
+    Serial.print(F("Hz ("));
+    Serial.print(pulseCount);
+    Serial.println(F(" pulses)"));
+
+    // Reset for next window
+    pulseCount = 0;
+    freqMonLastUpdate = now;
+  }
+}
+
+// Stop frequency monitoring
+void handleFreqStop() {
+  if (freqMonActive && freqMonPin >= 0) {
+    detachInterrupt(digitalPinToInterrupt(freqMonPin));
+    freqMonPin = -1;
+    freqMonActive = false;
+    Serial.println(F("FREQ_MON_STOPPED"));
+  } else {
+    Serial.println(F("ERR:NOT_ACTIVE"));
+  }
 }

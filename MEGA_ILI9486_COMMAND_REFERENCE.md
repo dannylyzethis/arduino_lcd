@@ -1867,6 +1867,256 @@ C = 10µF (cutoff ≈ 16Hz)
 
 ---
 
+## Pulse/Frequency Measurement
+
+### Overview
+Measure pulse widths, count pulses, and monitor frequencies for sensors, encoders, and signal analysis.
+
+### Available Pins
+- **All digital pins** for pulse measurement
+- **Interrupt pins (2, 3, 18-21)** for continuous frequency monitoring
+
+### Measurement Commands
+
+#### Measure Pulse Width
+```
+#PULSEIN <pin> <state> <timeout>    Measure single pulse duration
+```
+
+**Parameters:**
+- `pin` - Any digital pin number
+- `state` - Pulse state to measure: `HIGH`, `LOW`, `1`, or `0`
+- `timeout` - Maximum wait time in microseconds (max 3,000,000)
+
+**Examples:**
+```
+#PULSEIN 30 HIGH 1000000       Measure HIGH pulse, 1 second timeout
+#PULSEIN 31 LOW 500000         Measure LOW pulse, 500ms timeout
+#PULSEIN 32 1 2000000          Measure HIGH pulse, 2 second timeout
+```
+
+**Response:**
+```
+PULSE_IN: Pin=30, State=HIGH, Duration=1234us
+NOTE: Timeout or no pulse detected
+```
+
+**Measurement:**
+- Returns pulse duration in microseconds (µs)
+- Blocks until pulse detected or timeout
+- Returns 0 if timeout occurs
+
+#### Count Pulses (One-Shot)
+```
+#FREQCOUNT <pin> <duration>    Count pulses over time period
+```
+
+**Parameters:**
+- `pin` - Any digital pin number
+- `duration` - Measurement window in milliseconds (10-10000)
+
+**Examples:**
+```
+#FREQCOUNT 30 1000         Count pulses for 1 second
+#FREQCOUNT 31 5000         Count pulses for 5 seconds
+#FREQCOUNT 32 100          Count pulses for 100ms
+```
+
+**Response:**
+```
+FREQ_COUNT: Pin=30, Pulses=1234, Duration=1000ms, Freq=1234.00Hz
+```
+
+**Features:**
+- Counts rising edges (LOW to HIGH transitions)
+- Calculates frequency in Hz
+- Blocks during measurement
+- Good for one-time measurements
+
+#### Continuous Frequency Monitoring
+```
+#FREQMON <pin> <duration>      Start continuous monitoring
+#FREQSTOP                      Stop monitoring
+```
+
+**Parameters:**
+- `pin` - Interrupt-capable pin (2, 3, 18, 19, 20, 21)
+- `duration` - Measurement window in milliseconds (100-10000)
+
+**Examples:**
+```
+#FREQMON 2 1000            Monitor pin 2, update every 1 second
+#FREQMON 3 500             Monitor pin 3, update every 500ms
+#FREQSTOP                  Stop monitoring
+```
+
+**Response:**
+```
+FREQ_MON_START: Pin=2, Window=1000ms
+FREQ: 1234.56Hz (1234 pulses)
+FREQ: 1235.12Hz (1235 pulses)
+...
+FREQ_MON_STOPPED
+```
+
+**Features:**
+- Uses hardware interrupts (non-blocking)
+- Automatic periodic updates
+- High accuracy for continuous signals
+- Background operation
+
+### Interrupt Pin Mapping
+
+| Pin | Interrupt | Notes |
+|-----|-----------|-------|
+| 2   | INT0      | Available |
+| 3   | INT1      | Available |
+| 18  | INT5      | TX1 (Serial1) |
+| 19  | INT4      | RX1 (Serial1) |
+| 20  | INT3      | SDA (I2C) |
+| 21  | INT2      | SCL (I2C) |
+
+**Note:** Pins 18-21 may conflict with Serial1 or I2C if those features are in use.
+
+### Measurement Specifications
+
+#### Pulse Width (PULSEIN)
+- **Resolution:** 1 microsecond
+- **Range:** 10µs to 3,000,000µs (3 seconds)
+- **Accuracy:** ±1µs typical
+- **Blocking:** Yes
+
+#### Frequency Count (FREQCOUNT)
+- **Resolution:** 0.01 Hz
+- **Range:** 0.1 Hz to 100 kHz (depending on duration)
+- **Min Duration:** 10ms
+- **Max Duration:** 10 seconds
+- **Blocking:** Yes
+
+#### Frequency Monitor (FREQMON)
+- **Resolution:** 0.01 Hz
+- **Range:** 10 Hz to 50 kHz
+- **Update Rate:** 100ms to 10 seconds
+- **Blocking:** No (uses interrupts)
+
+### Usage Examples
+
+#### Measure Ultrasonic Sensor (HC-SR04)
+```
+#GPIOMODE 30 OUT           Trigger pin
+#GPIOMODE 31 IN            Echo pin
+#GPIOWRITE 30 1            Send trigger pulse
+#GPIOWRITE 30 0
+#PULSEIN 31 HIGH 30000     Measure echo (30ms timeout)
+```
+
+**Distance calculation:**
+- Duration in µs / 58 = Distance in cm
+- Example: 1160µs / 58 = 20cm
+
+#### Measure Motor RPM (with encoder)
+```
+#FREQCOUNT 2 1000          Count pulses for 1 second
+```
+
+**RPM calculation:**
+- If encoder has 20 pulses per revolution:
+- RPM = (Frequency × 60) / 20
+- Example: 100 Hz → (100 × 60) / 20 = 300 RPM
+
+#### Monitor Tachometer Signal
+```
+#FREQMON 3 1000            Update every second
+... motor running ...
+#FREQSTOP                  Stop when done
+```
+
+**Output:**
+```
+FREQ: 166.67Hz (167 pulses)    10,000 RPM (with 1 pulse/rev)
+FREQ: 83.33Hz (83 pulses)      5,000 RPM
+```
+
+#### Measure PWM Signal
+```
+#PULSEIN 30 HIGH 10000     Measure HIGH time
+#PULSEIN 30 LOW 10000      Measure LOW time
+```
+
+**Duty cycle calculation:**
+- Duty % = (HIGH time / (HIGH time + LOW time)) × 100
+- Example: HIGH=800µs, LOW=200µs → 80% duty cycle
+
+#### Frequency Counter for Signal Generator
+```
+#FREQMON 2 1000            Continuous monitoring
+... adjust signal generator ...
+... read frequency updates ...
+#FREQSTOP
+```
+
+#### Measure AC Power Frequency
+```
+#FREQCOUNT 30 2000         Count for 2 seconds (high accuracy)
+```
+
+**Expected:** ~50Hz (Europe) or ~60Hz (North America)
+
+### Timing Accuracy
+
+#### Factors Affecting Accuracy
+
+**PULSEIN:**
+- Interrupt overhead: ~5µs
+- Clock precision: 16 MHz crystal
+- Best for: >100µs pulses
+
+**FREQCOUNT:**
+- Polling speed: ~1µs per loop
+- Best for: <10 kHz signals
+- Accuracy improves with longer duration
+
+**FREQMON:**
+- Interrupt-driven: very accurate
+- No polling overhead
+- Best for: continuous signals >10 Hz
+
+### Error Messages
+
+| Error | Cause | Solution |
+|-------|-------|----------|
+| ERR:TIMEOUT_MAX_3000000 | Timeout too large | Use ≤3,000,000µs |
+| ERR:DURATION_RANGE | Invalid duration | Use 10-10000ms (FREQCOUNT) or 100-10000ms (FREQMON) |
+| ERR:PIN_NO_INTERRUPT | Pin doesn't support interrupts | Use pins 2, 3, 18-21 for FREQMON |
+| ERR:NOT_ACTIVE | FREQSTOP called without active monitoring | Start FREQMON first |
+
+### Important Notes
+
+- **PULSEIN blocks:** Code waits for pulse or timeout
+- **FREQCOUNT blocks:** Code waits for full duration
+- **FREQMON is non-blocking:** Uses interrupts, runs in background
+- **Pin conflicts:** Don't monitor pins used by other features
+- **Signal levels:** Requires 5V logic levels or level shifting for 3.3V
+- **Debouncing:** Mechanical switches may need debouncing
+- **Maximum frequency:** Limited by interrupt latency (~50 kHz practical limit)
+
+### Applications
+
+| Application | Command | Notes |
+|------------|---------|-------|
+| Ultrasonic distance | PULSEIN | Measure echo pulse |
+| Servo position feedback | PULSEIN | Measure pulse width |
+| Motor RPM | FREQCOUNT or FREQMON | Encoder pulses |
+| Tachometer | FREQMON | Continuous speed monitoring |
+| Frequency counter | FREQCOUNT | One-time measurement |
+| PWM analysis | PULSEIN | Measure duty cycle |
+| IR remote decode | PULSEIN | Measure pulse patterns |
+| Flow meter | FREQMON | Continuous flow rate |
+| Wheel speed sensor | FREQMON | Vehicle speed |
+| Signal generator test | FREQCOUNT | Verify output frequency |
+
+---
+
 ## Support and Documentation
 
 ### Getting Help
@@ -1876,9 +2126,9 @@ C = 10µF (cutoff ≈ 16Hz)
 
 ### Version Information
 - **Firmware:** MEGA Split Screen ILI9486 v2.0
-- **Features:** Split display, FPGA serial, I2C, SPI, EEPROM, Analog, GPIO, Touch, Widgets, Data Logging, Waveform Gen
+- **Features:** Split display, FPGA serial, I2C, SPI, EEPROM, Analog, GPIO, Touch, Widgets, Data Logging, Waveform Gen, Pulse/Freq Measurement
 - **Command Set:** Text-based serial protocol
-- **New in v2.0:** Display widgets, Data logging system, PWM waveform generator
+- **New in v2.0:** Display widgets, Data logging system, PWM waveform generator, Pulse/frequency measurement
 
 ### Notes
 - All commands start with `#` except plain text and FPGA passthrough (`>>>`)
