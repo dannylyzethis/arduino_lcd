@@ -11,8 +11,13 @@
 8. [GPIO Control](#gpio-control)
 9. [Touch Interface](#touch-interface)
 10. [Drawing Commands](#drawing-commands)
-11. [Color Reference](#color-reference)
-12. [Technical Specifications](#technical-specifications)
+11. [Display Widgets](#display-widgets)
+12. [Configuration System](#configuration-system)
+13. [Data Logging System](#data-logging-system)
+14. [Waveform Generator (PWM)](#waveform-generator-pwm)
+15. [Pulse/Frequency Measurement](#pulsefrequency-measurement)
+16. [Color Reference](#color-reference)
+17. [Technical Specifications](#technical-specifications)
 
 ---
 
@@ -27,6 +32,16 @@
 ### Split Screen Layout
 - **Top Screen:** Main display area for user text and graphics
 - **Bottom Screen:** Status/log area for FPGA communication and system messages
+
+### Feature Summary
+- **Display:** Text output, colors, rotation, touch buttons, graphical widgets
+- **FPGA Interface:** 3x serial ports with configurable baud/termination/parsing
+- **Peripherals:** I2C, SPI, GPIO (8 pins), Analog input (8 channels)
+- **Storage:** 4KB EEPROM with protection zones and configuration system
+- **Data Logging:** Background logging to EEPROM with circular buffer
+- **Signal Generation:** PWM waveform generator (square/triangle/sine)
+- **Measurement:** Pulse width and frequency measurement
+- **Configuration:** Persistent settings for rotation, FPGA, custom button commands
 
 ---
 
@@ -418,7 +433,7 @@ SPI_RX[3]=0xAB 0xCD 0xEF
 ```
 
 **Parameters:**
-- `speed` - Clock frequency in Hz (100 to 16000000)
+- `speed` - Clock frequency in Hz (100 to 8000000)
 - `mode` - SPI mode (0-3)
 
 **SPI Modes:**
@@ -431,9 +446,9 @@ SPI_RX[3]=0xAB 0xCD 0xEF
 
 **Common Speed Values:**
 - `4000000` - 4 MHz (safe for most devices)
-- `8000000` - 8 MHz (fast devices)
+- `8000000` - 8 MHz (maximum - Mega 16MHz/2)
 - `1000000` - 1 MHz (slow devices)
-- `16000000` - 16 MHz (maximum, use with caution)
+- `250000` - 250 kHz (very slow/initialization)
 
 **Examples:**
 ```
@@ -1310,7 +1325,7 @@ R  R  R  R  R  G  G  G  G  G  G  B  B  B  B  B
 ### Performance
 - **Serial Baud Rates:** 300 to 115200 bps
 - **I2C Clock:** 100kHz standard mode
-- **SPI Clock:** 100Hz to 16MHz
+- **SPI Clock:** 100Hz to 8MHz (Mega CLK/2)
 - **ADC Conversion:** ~100µs per sample
 - **Touch Scan Rate:** ~10Hz when enabled
 
@@ -1357,6 +1372,23 @@ GPIO read:            #GPIOREAD 22         Read pin state
 Touch buttons:        #SHOWBTNS            Show buttons
 Touch calibration:    #TOUCHCAL ?          Show cal values
 
+Display widgets:      #GAUGE 100 100 50 75 100    Draw gauge
+                      #BARGRAPH 10 10 300 100 50 75 80    Bar graph
+                      #TREND 10 10 300 100 512 520 515    Trend line
+
+Configuration:        #CONFIGSAVE          Save settings
+                      #CONFIGLOAD          Load settings
+                      #BTNCONFIG UP 3 0xAA 0xBB 0xCC    Custom button
+                      #FPGAWRITE 100 0xFF 0xAA    Write FPGA zone
+                      #FPGAREAD 100 10     Read FPGA zone
+
+Data logging:         #LOGSTART 1000 0     Log A8 every 1s
+                      #LOGREAD 20          Read 20 entries
+                      #LOGZONE 2000 4095   Set log zone
+
+Waveform gen:         #WAVEGEN 9 SINE 1000    1kHz sine wave
+Frequency:            #FREQMON 2 1000      Monitor frequency
+
 Help:                 #HELP                Full command list
 Status:               #STATUS              Show all settings
 Device ID:            #ID                  Show device info
@@ -1374,7 +1406,7 @@ Device ID:            #ID                  Show device info
 | ERR:INVALID_ADDR | Invalid I2C address | Use 0x00-0x7F range |
 | ERR:PIN_RANGE | Pin number invalid | Check valid pin ranges |
 | ERR:SPI_NOT_INIT | SPI not initialized | Run #SPIBEGIN first |
-| ERR:SPEED_RANGE | SPI speed invalid | Use 100-16000000 Hz |
+| ERR:SPEED_RANGE | SPI speed invalid | Use 100-8000000 Hz |
 | ERR:MODE_RANGE | SPI mode invalid | Use 0-3 |
 | ERR:NOT_OUTPUT | GPIO write on input pin | Set pin to OUTPUT mode |
 | ERR:PIN_22_29_ONLY | GPIO pin out of range | Use pins 22-29 only |
