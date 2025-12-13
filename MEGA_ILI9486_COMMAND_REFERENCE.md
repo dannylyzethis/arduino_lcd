@@ -1375,6 +1375,7 @@ Touch calibration:    #TOUCHCAL ?          Show cal values
 Display widgets:      #GAUGE 100 100 50 75 100    Draw gauge
                       #BARGRAPH 10 10 300 100 50 75 80    Bar graph
                       #TREND 10 10 300 100 512 520 515    Trend line
+                      #XYPLOT 10 10 300 200 0,0 10,5 20,15 GRID    XY plot
 
 Configuration:        #CONFIGSAVE          Save settings
                       #CONFIGLOAD          Load settings
@@ -1598,6 +1599,58 @@ Advanced visualization widgets for creating dynamic dashboards and monitoring in
 - Connected line plot
 - Data point markers (circles)
 - Bordered box
+
+#### XY Plot/Graph
+```
+#XYPLOT <x> <y> <w> <h> <x1,y1> <x2,y2> ...    Draw XY scatter/line plot
+```
+
+**Parameters:**
+- `x`, `y` - Top-left corner
+- `w`, `h` - Width and height
+- `x1,y1` - First data point (X,Y coordinates)
+- `x2,y2` - Second data point
+- `...` - Additional points (up to 50 XY pairs)
+
+**Options:**
+- `STYLE POINTS` - Show only data points
+- `STYLE LINES` - Show only connecting lines
+- `STYLE BOTH` - Show both points and lines (default)
+- `GRID` - Display grid lines
+
+**Examples:**
+```
+# Simple XY plot (auto-scaled)
+#XYPLOT 10 10 300 200 0,0 10,5 20,15 30,25 40,20
+
+# Plot with grid and points only
+#XYPLOT 10 10 300 200 0,0 50,100 100,150 150,120 STYLE POINTS GRID
+
+# Frequency response plot
+#XYPLOT 10 10 300 150 10,-20 100,-15 1000,-10 10000,-25 STYLE LINES
+
+# Calibration curve
+#XYPLOT 10 10 300 200 0,0 256,1.1 512,2.2 768,3.3 1023,4.4 GRID
+
+# Lissajous figure
+#XYPLOT 50 50 200 200 0,0 50,86 86,50 100,0 86,-50 50,-86 STYLE BOTH
+```
+
+**Visual Features:**
+- Auto-scaling to fit all data points (with 10% margin)
+- Axis labels showing X and Y min/max values
+- Optional grid lines (5x5 dotted pattern)
+- Three plot styles: points, lines, or both
+- Supports negative values
+- Perfect for: oscilloscope traces, calibration curves, frequency responses, I-V curves, position tracking
+
+**Use Cases:**
+- **Sensor Calibration:** Plot ADC reading vs actual voltage
+- **Frequency Response:** Plot frequency vs gain (Bode plot)
+- **I-V Characteristics:** Plot current vs voltage for components
+- **Position Tracking:** Plot X-Y coordinates for robot paths
+- **Oscilloscope Traces:** Plot time-domain waveforms
+- **Lissajous Patterns:** Phase relationship visualization
 
 ### Widget Usage Examples
 

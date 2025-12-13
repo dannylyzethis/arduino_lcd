@@ -1666,6 +1666,9 @@ void processCmd(String c) {
     } else if (c.startsWith("#TREND ")) {
       handleTrend(c.substring(7));
 
+    } else if (c.startsWith("#XYPLOT ")) {
+      handleXYPlot(c.substring(8));
+
     } else if (c.startsWith("#LOGSTART ")) {
       handleLogStart(c.substring(10));
 
@@ -2202,6 +2205,8 @@ void help() {
   Serial.println(F("  #BARGRAPH <x y w h val1 val2...>"));
   Serial.println(F("  #NUMBOX <x y value>"));
   Serial.println(F("  #TREND <x y w h val1 val2...>"));
+  Serial.println(F("  #XYPLOT <x y w h x1,y1 x2,y2...>"));
+  Serial.println(F("    Options: STYLE POINTS|LINES|BOTH GRID"));
   Serial.println();
   Serial.println(F("DATA LOGGING (EEPROM):"));
   Serial.println(F("  #LOGSTART <ms> [source]"));
@@ -3657,6 +3662,184 @@ void handleTrend(String params) {
   Serial.print(F("OK:TREND "));
   Serial.print(numPoints);
   Serial.println(F(" points"));
+}
+
+// ========== XY PLOT WIDGET ==========
+
+void handleXYPlot(String params) {
+  // Format: #XYPLOT <x> <y> <w> <h> <x1,y1> <x2,y2> ... [STYLE POINTS|LINES|BOTH] [GRID]
+  // Parse parameters
+  int vals[100];  // Max 50 XY pairs = 100 values
+  int count = 0;
+  int lastPos = 0;
+  bool showGrid = false;
+  uint8_t plotStyle = 2;  // 0=POINTS, 1=LINES, 2=BOTH
+
+  // Check for GRID option
+  if (params.indexOf(" GRID") > 0) {
+    showGrid = true;
+    params.replace(" GRID", "");
+  }
+
+  // Check for STYLE option
+  int stylePos = params.indexOf(" STYLE ");
+  if (stylePos > 0) {
+    String styleStr = params.substring(stylePos + 7);
+    styleStr.trim();
+    styleStr.toUpperCase();
+
+    if (styleStr.startsWith("POINTS")) {
+      plotStyle = 0;
+      params = params.substring(0, stylePos);
+    } else if (styleStr.startsWith("LINES")) {
+      plotStyle = 1;
+      params = params.substring(0, stylePos);
+    } else if (styleStr.startsWith("BOTH")) {
+      plotStyle = 2;
+      params = params.substring(0, stylePos);
+    }
+  }
+
+  // Parse position, size, and XY pairs
+  for (int i = 0; i <= params.length() && count < 100; i++) {
+    if (i == params.length() || params[i] == ' ' || params[i] == ',') {
+      if (i > lastPos) {
+        vals[count++] = params.substring(lastPos, i).toInt();
+      }
+      lastPos = i + 1;
+    }
+  }
+
+  if (count < 6) {
+    Serial.println(F("ERR:FORMAT #XYPLOT <x> <y> <w> <h> <x1,y1> <x2,y2> ..."));
+    return;
+  }
+
+  int16_t px = vals[0];
+  int16_t py = vals[1];
+  int16_t pw = vals[2];
+  int16_t ph = vals[3];
+  int numPairs = (count - 4) / 2;
+
+  if (numPairs < 2) {
+    Serial.println(F("ERR:MIN 2 POINTS"));
+    return;
+  }
+
+  // Extract X,Y data
+  int xData[50];
+  int yData[50];
+  for (int i = 0; i < numPairs; i++) {
+    xData[i] = vals[4 + i * 2];
+    yData[i] = vals[4 + i * 2 + 1];
+  }
+
+  // Find min/max for auto-scaling
+  int xMin = xData[0], xMax = xData[0];
+  int yMin = yData[0], yMax = yData[0];
+
+  for (int i = 1; i < numPairs; i++) {
+    if (xData[i] < xMin) xMin = xData[i];
+    if (xData[i] > xMax) xMax = xData[i];
+    if (yData[i] < yMin) yMin = yData[i];
+    if (yData[i] > yMax) yMax = yData[i];
+  }
+
+  // Prevent divide by zero
+  if (xMax == xMin) xMax = xMin + 1;
+  if (yMax == yMin) yMax = yMin + 1;
+
+  // Add 10% margin for better visualization
+  int xRange = xMax - xMin;
+  int yRange = yMax - yMin;
+  xMin -= xRange / 10;
+  xMax += xRange / 10;
+  yMin -= yRange / 10;
+  yMax += yRange / 10;
+
+  // Draw border
+  tft.drawRect(px, py, pw, ph, topTextColor);
+
+  // Draw grid if requested
+  if (showGrid) {
+    uint16_t gridColor = 0x39E7;  // Gray
+
+    // Vertical grid lines (5 lines)
+    for (int i = 1; i < 5; i++) {
+      int gx = px + (pw * i) / 5;
+      for (int gy = py + 2; gy < py + ph - 2; gy += 4) {
+        tft.drawPixel(gx, gy, gridColor);
+      }
+    }
+
+    // Horizontal grid lines (5 lines)
+    for (int i = 1; i < 5; i++) {
+      int gy = py + (ph * i) / 5;
+      for (int gx = px + 2; gx < px + pw - 2; gx += 4) {
+        tft.drawPixel(gx, gy, gridColor);
+      }
+    }
+  }
+
+  // Draw axes labels (min/max values)
+  tft.setTextSize(1);
+  tft.setTextColor(topTextColor);
+
+  // X-axis min (bottom-left)
+  tft.setCursor(px + 2, py + ph - 10);
+  tft.print(xMin);
+
+  // X-axis max (bottom-right)
+  String xMaxStr = String(xMax);
+  tft.setCursor(px + pw - 6 * xMaxStr.length() - 2, py + ph - 10);
+  tft.print(xMax);
+
+  // Y-axis max (top-left)
+  tft.setCursor(px + 2, py + 2);
+  tft.print(yMax);
+
+  // Y-axis min (bottom-left, above x min)
+  tft.setCursor(px + 2, py + ph - 20);
+  tft.print(yMin);
+
+  // Plot data points
+  for (int i = 0; i < numPairs; i++) {
+    // Map data to screen coordinates
+    int sx = px + 2 + map(xData[i], xMin, xMax, 0, pw - 4);
+    int sy = py + 2 + map(yData[i], yMax, yMin, 0, ph - 4);  // Note: yMax first for inverted Y
+
+    // Constrain to plot area
+    sx = constrain(sx, px + 2, px + pw - 2);
+    sy = constrain(sy, py + 2, py + ph - 2);
+
+    // Draw point
+    if (plotStyle == 0 || plotStyle == 2) {
+      tft.fillCircle(sx, sy, 2, topTextColor);
+    }
+
+    // Draw line to next point
+    if (i < numPairs - 1 && (plotStyle == 1 || plotStyle == 2)) {
+      int sx2 = px + 2 + map(xData[i + 1], xMin, xMax, 0, pw - 4);
+      int sy2 = py + 2 + map(yData[i + 1], yMax, yMin, 0, ph - 4);
+
+      sx2 = constrain(sx2, px + 2, px + pw - 2);
+      sy2 = constrain(sy2, py + 2, py + ph - 2);
+
+      tft.drawLine(sx, sy, sx2, sy2, topTextColor);
+    }
+  }
+
+  Serial.print(F("OK:XYPLOT "));
+  Serial.print(numPairs);
+  Serial.print(F(" points ["));
+  Serial.print(xMin);
+  Serial.print(F(","));
+  Serial.print(yMin);
+  Serial.print(F(" - "));
+  Serial.print(xMax);
+  Serial.print(F(","));
+  Serial.print(yMax);
+  Serial.println(F("]"));
 }
 
 // ========== DATA LOGGING FUNCTIONS ==========
