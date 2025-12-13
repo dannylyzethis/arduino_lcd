@@ -15,9 +15,15 @@
 12. [Configuration System](#configuration-system)
 13. [Data Logging System](#data-logging-system)
 14. [Waveform Generator (PWM)](#waveform-generator-pwm)
-15. [Pulse/Frequency Measurement](#pulsefrequency-measurement)
-16. [Color Reference](#color-reference)
-17. [Technical Specifications](#technical-specifications)
+15. [PWM Control](#pwm-control)
+16. [System Info](#system-info)
+17. [Statistics Tracking](#statistics-tracking)
+18. [Threshold Alerts](#threshold-alerts)
+19. [Scrolling Text](#scrolling-text)
+20. [Command Macros](#command-macros)
+21. [Pulse/Frequency Measurement](#pulsefrequency-measurement)
+22. [Color Reference](#color-reference)
+23. [Technical Specifications](#technical-specifications)
 
 ---
 
@@ -34,13 +40,16 @@
 - **Bottom Screen:** Status/log area for FPGA communication and system messages
 
 ### Feature Summary
-- **Display:** Text output, colors, rotation, touch buttons, graphical widgets
+- **Display:** Text output, colors, rotation, touch buttons, graphical widgets, scrolling text
 - **FPGA Interface:** 3x serial ports with configurable baud/termination/parsing
 - **Peripherals:** I2C, SPI, GPIO (8 pins), Analog input (8 channels)
 - **Storage:** 4KB EEPROM with protection zones and configuration system
 - **Data Logging:** Background logging to EEPROM with circular buffer
-- **Signal Generation:** PWM waveform generator (square/triangle/sine)
-- **Measurement:** Pulse width and frequency measurement
+- **Signal Generation:** PWM waveform generator (square/triangle/sine), direct PWM control
+- **Measurement:** Pulse width, frequency measurement, analog statistics (min/max/avg)
+- **Monitoring:** Threshold alerts with visual/serial notifications
+- **Automation:** Command macros for multi-step operations
+- **System:** Memory info, uptime tracking, performance benchmarks
 - **Configuration:** Persistent settings for rotation, FPGA, custom button commands
 
 ---
@@ -2515,6 +2524,780 @@ FREQ: 83.33Hz (83 pulses)      5,000 RPM
 
 ---
 
+## PWM Control
+
+The PWM Control system provides direct control over PWM outputs without the complexity of the waveform generator. Use this for simple LED dimming, motor control, and servo positioning.
+
+### Commands
+
+#### Set PWM Output
+```
+#PWMSET <pin> <duty>
+```
+
+Set PWM duty cycle on a pin.
+
+**Parameters:**
+- `pin`: PWM-capable pin (2-13, 44-46)
+- `duty`: Duty cycle (0-255)
+  - 0 = fully off
+  - 128 = 50% duty cycle
+  - 255 = fully on
+
+**Examples:**
+```
+#PWMSET 9 128          50% duty cycle on pin 9
+#PWMSET 10 64          25% duty cycle on pin 10
+#PWMSET 11 255         Full power on pin 11
+#PWMSET 5 0            Turn off pin 5
+```
+
+**Response:**
+```
+PWM_SET: Pin=9, Duty=128 (50%)
+```
+
+#### Stop PWM Output
+```
+#PWMSTOP <pin>
+```
+
+Stop PWM output on a pin (sets to 0).
+
+**Example:**
+```
+#PWMSTOP 9
+```
+
+**Response:**
+```
+PWM_STOPPED: Pin=9
+```
+
+#### Adjust PWM Frequency
+```
+#PWMFREQ <pin> <freq>
+```
+
+Adjust PWM frequency by modifying timer prescalers.
+
+**Parameters:**
+- `pin`: PWM pin (determines which timer to adjust)
+- `freq`: Desired frequency in Hz (31-31250 Hz)
+
+**Available Frequencies (approximate):**
+- 31, 62, 122, 244, 488, 976, 1953, 3906, 7812, 15625, 31250 Hz
+
+**Examples:**
+```
+#PWMFREQ 9 1000        ~976 Hz (closest available)
+#PWMFREQ 10 500        ~488 Hz
+```
+
+**Response:**
+```
+PWM_FREQ: Timer2, Prescaler=64, Freq=976Hz
+WARNING: Affects all pins on this timer!
+```
+
+### Timer Assignments
+
+**Timer 0 (PROTECTED - used by millis/delay):**
+- Pins: 4, 13
+
+**Timer 1 (16-bit):**
+- Pins: 11, 12
+
+**Timer 2 (8-bit):**
+- Pins: 9, 10
+
+**Timer 3 (16-bit):**
+- Pins: 2, 3, 5
+
+**Timer 4 (16-bit):**
+- Pins: 6, 7, 8
+
+**Timer 5 (16-bit):**
+- Pins: 44, 45, 46
+
+### Important Notes
+
+⚠️ **WARNING:** Changing PWM frequency affects ALL pins on the same timer!
+
+- Pins 4 and 13 are protected (Timer0 is used by millis() and delay())
+- Default Arduino PWM frequency is ~490 Hz (Timer 1,3,4,5) or ~980 Hz (Timer 2)
+- Changing frequency may affect tone() function if used
+- Lower frequencies = more flicker for LEDs, better for motors
+- Higher frequencies = smoother LED dimming, higher switching losses
+
+### Use Cases
+
+#### LED Dimming
+```
+#PWMSET 9 0            Off
+#PWMSET 9 32           ~12% brightness
+#PWMSET 9 128          ~50% brightness
+#PWMSET 9 255          Full brightness
+```
+
+#### Motor Speed Control
+```
+#PWMFREQ 6 1000        Set suitable frequency for motor
+#PWMSET 6 128          50% speed
+```
+
+#### Servo Control (Basic)
+```
+#PWMFREQ 5 50          50 Hz for servos
+#PWMSET 5 13           ~1ms pulse (0°)
+#PWMSET 5 19           ~1.5ms pulse (90°)
+#PWMSET 5 26           ~2ms pulse (180°)
+```
+
+**Note:** For precise servo control, use the waveform generator instead.
+
+### Error Messages
+
+| Error | Cause | Solution |
+|-------|-------|----------|
+| ERR:PIN_NO_PWM | Pin doesn't support PWM | Use pins 2-13 or 44-46 |
+| ERR:TIMER0_PROTECTED | Tried to modify Timer0 | Use different pins |
+| ERR:FORMAT | Invalid syntax | Check command format |
+
+---
+
+## System Info
+
+System information commands provide real-time monitoring of memory, uptime, and performance.
+
+### Commands
+
+#### Memory Information
+```
+#MEMINFO
+```
+
+Display comprehensive memory usage information.
+
+**Response:**
+```
+=== MEMORY INFO ===
+Free RAM: 5432 bytes (66%)
+EEPROM Total: 4096 bytes
+EEPROM Config: 0-99 (100 bytes)
+EEPROM FPGA Zone: 100-299 (200 bytes)
+EEPROM User Zone: 300-499 (200 bytes)
+EEPROM Free: 500-1999 (1500 bytes)
+EEPROM Log Zone: 2000-4095 (2096 bytes)
+Log Entries: 42/262
+==================
+```
+
+**Information Provided:**
+- Free RAM (bytes and percentage)
+- EEPROM zone allocations
+- Current log entry count
+
+#### System Uptime
+```
+#UPTIME
+```
+
+Display system uptime since last reset.
+
+**Response:**
+```
+UPTIME: 2d 5h 23m 47s (183827000ms)
+```
+
+**Format:**
+- Days, hours, minutes, seconds
+- Total milliseconds in parentheses
+
+#### Performance Benchmark
+```
+#BENCHMARK
+```
+
+Run comprehensive performance tests.
+
+**Response:**
+```
+=== BENCHMARK ===
+Int Math (10k): 8234us
+Float Math (1k): 12456us
+Analog Read (100): 11200us (112us/read)
+Digital Write (1k): 1450us (1us/write)
+Display Pixels (1k): 234ms
+Display Text (10x): 156ms
+EEPROM Write (100): 330ms (3.30ms/byte)
+EEPROM Read (100): 11200us (112us/byte)
+=================
+```
+
+**Tests Performed:**
+1. Integer arithmetic (10,000 operations)
+2. Floating-point arithmetic (1,000 operations)
+3. Analog reads (100 samples from A8)
+4. Digital writes (1,000 toggles on pin 22)
+5. Display pixel drawing (1,000 pixels)
+6. Display text rendering (10 text prints)
+7. EEPROM write operations (100 bytes to free zone)
+8. EEPROM read operations (100 bytes)
+
+### Use Cases
+
+#### Memory Monitoring
+```
+#MEMINFO               Check available RAM
+... perform operations ...
+#MEMINFO               Check for memory leaks
+```
+
+#### Uptime Tracking
+```
+#UPTIME                Verify system stability
+```
+
+#### Performance Analysis
+```
+#BENCHMARK             Baseline performance
+... make code changes ...
+#BENCHMARK             Measure impact
+```
+
+---
+
+## Statistics Tracking
+
+Real-time statistics collection for analog inputs, tracking minimum, maximum, and average values.
+
+### Commands
+
+#### Start Statistics Collection
+```
+#STATSSTART <pin>
+```
+
+Begin collecting statistics for an analog input.
+
+**Parameters:**
+- `pin`: Analog input (0-7 for A8-A15)
+
+**Examples:**
+```
+#STATSSTART 0          Start stats for A8
+#STATSSTART 3          Start stats for A11
+```
+
+**Response:**
+```
+STATS_START: A8
+```
+
+#### Stop Statistics Collection
+```
+#STATSSTOP <pin>
+```
+
+Stop collecting statistics (doesn't clear data).
+
+**Example:**
+```
+#STATSSTOP 0
+```
+
+**Response:**
+```
+STATS_STOP: A8
+```
+
+#### Show Statistics
+```
+#STATSSHOW <pin>
+```
+
+Display collected statistics.
+
+**Example:**
+```
+#STATSSHOW 0
+```
+
+**Response:**
+```
+=== STATS A8 ===
+Active: YES
+Samples: 12450
+Min: 234 (1142mV)
+Max: 987 (4814mV)
+Avg: 512 (2500mV)
+Range: 753
+================
+```
+
+**Information Provided:**
+- Collection status (Active/Inactive)
+- Number of samples collected
+- Minimum value (ADC and millivolts)
+- Maximum value (ADC and millivolts)
+- Average value (ADC and millivolts)
+- Range (max - min)
+
+#### Reset All Statistics
+```
+#STATSRESET
+```
+
+Clear statistics for all channels.
+
+**Response:**
+```
+STATS_RESET: All channels cleared
+```
+
+### How It Works
+
+- Statistics update continuously in main loop
+- Updates occur every loop iteration when active
+- No performance impact when inactive
+- Can track multiple channels simultaneously
+- ADC values: 0-1023 (10-bit)
+- Voltage conversion assumes 5V reference
+
+### Use Cases
+
+#### Monitor Sensor Stability
+```
+#STATSSTART 0          Start tracking A8
+... wait 30 seconds ...
+#STATSSHOW 0           Check range and average
+```
+
+Small range = stable sensor
+Large range = noisy or varying signal
+
+#### Calibrate Sensor Range
+```
+#STATSSTART 2          Track A10
+... exercise full sensor range ...
+#STATSSHOW 2           Get min/max values
+```
+
+Use min/max to scale readings.
+
+#### Detect Signal Characteristics
+```
+#STATSSTART 1
+... collect data ...
+#STATSSHOW 1
+```
+
+Average indicates DC offset
+Range indicates AC amplitude
+
+#### Multiple Sensor Monitoring
+```
+#STATSSTART 0          Temperature
+#STATSSTART 1          Pressure
+#STATSSTART 2          Light level
+... wait ...
+#STATSSHOW 0
+#STATSSHOW 1
+#STATSSHOW 2
+```
+
+### Error Messages
+
+| Error | Cause | Solution |
+|-------|-------|----------|
+| ERR:SOURCE_0_TO_7 | Invalid pin number | Use 0-7 for A8-A15 |
+
+---
+
+## Threshold Alerts
+
+Automatic monitoring system that triggers alerts when analog values go outside specified ranges.
+
+### Commands
+
+#### Set Threshold
+```
+#THRESHOLD <pin> <low> <high>
+```
+
+Set threshold range for an analog input.
+
+**Parameters:**
+- `pin`: Analog input (0-7 for A8-A15)
+- `low`: Low threshold (0-1023)
+- `high`: High threshold (0-1023)
+
+**Examples:**
+```
+#THRESHOLD 0 100 900   Alert if A8 < 100 or > 900
+#THRESHOLD 2 400 600   Alert if A10 outside 400-600
+```
+
+**Response:**
+```
+THRESHOLD_SET: A8, Low=100, High=900
+```
+
+#### Clear Threshold
+```
+#THRESHOLDCLEAR <pin>
+```
+
+Remove threshold monitoring from a pin.
+
+**Example:**
+```
+#THRESHOLDCLEAR 0
+```
+
+**Response:**
+```
+THRESHOLD_CLEAR: A8
+```
+
+#### Show Threshold Status
+```
+#THRESHOLDSTATUS
+```
+
+Display all active thresholds and their current state.
+
+**Response:**
+```
+=== THRESHOLD STATUS ===
+A8: Low=100, High=900, Alert=NO
+A10: Low=400, High=600, Alert=YES
+========================
+```
+
+### How It Works
+
+**Monitoring:**
+- Thresholds checked every 100ms
+- Alert triggers when value goes outside range (< low OR > high)
+- Alert clears when value returns to acceptable range
+
+**Notifications:**
+
+**Serial Alert:**
+```
+ALERT: A8 = 95 < 100
+```
+
+**Serial Clear:**
+```
+CLEAR: A8 = 105
+```
+
+**Visual Alert:**
+- Red banner at bottom of display
+- Shows "ALERT A8: 95"
+- Clears when value returns to range
+
+### Use Cases
+
+#### Temperature Monitoring
+```
+#THRESHOLD 0 200 800   Normal range: 1V - 4V
+```
+
+Alert if temperature sensor out of range.
+
+#### Voltage Supervision
+```
+#THRESHOLD 1 410 614   12V ±10%: 2.0V - 3.0V (using divider)
+```
+
+Monitor power supply voltage.
+
+#### Light Level Detection
+```
+#THRESHOLD 2 100 900   Day/night detection
+```
+
+Alert on lighting changes.
+
+#### Sensor Failure Detection
+```
+#THRESHOLD 3 50 1000   Valid sensor range
+```
+
+Alert if sensor disconnected (reads 0 or max).
+
+#### Process Control
+```
+#THRESHOLD 4 450 550   Setpoint: 512 ±50
+```
+
+Monitor process variable near setpoint.
+
+### Multiple Thresholds Example
+```
+#THRESHOLD 0 200 800   Temperature
+#THRESHOLD 1 400 620   Voltage
+#THRESHOLD 2 100 900   Light
+#THRESHOLDSTATUS       Check all
+```
+
+### Important Notes
+
+- Visual alerts appear at bottom of screen (may overlap with other content)
+- Only one visual alert shown at a time (latest alert)
+- All alerts sent via serial
+- Alerts are edge-triggered (only on state change)
+- No repeated alerts while in alert state
+- Cleared automatically when value returns to range
+
+### Error Messages
+
+| Error | Cause | Solution |
+|-------|-------|----------|
+| ERR:PIN_0_TO_7 | Invalid pin | Use 0-7 for A8-A15 |
+| ERR:LOW_MUST_BE_LESS_THAN_HIGH | low ≥ high | Ensure low < high |
+
+---
+
+## Scrolling Text
+
+Animated horizontal scrolling text display.
+
+### Command
+
+```
+#SCROLL <y> <text>
+```
+
+Display scrolling text at specified Y position.
+
+**Parameters:**
+- `y`: Y position (0 to screenH-20)
+- `text`: Text to scroll
+
+**Examples:**
+```
+#SCROLL 100 Hello World!
+#SCROLL 50 Temperature: 25C
+#SCROLL 200 ALERT: System Ready
+```
+
+**Response:**
+```
+SCROLL_DONE
+```
+
+### Behavior
+
+- Text scrolls from right to left
+- Uses current text size (#SIZE setting)
+- Uses current text color (#COLOR setting)
+- Scroll speed: ~20ms per 4-pixel step
+- Clears scroll area when done
+- Can be interrupted by new serial commands
+
+### Animation Details
+
+**Speed:**
+- Moves 4 pixels every 20ms
+- ~200 pixels/second
+- Full screen (320px) takes ~1.6 seconds
+
+**Clearing:**
+- Clears text line before and after scrolling
+- Black background (0x0000)
+
+### Use Cases
+
+#### Status Messages
+```
+#SIZE 2
+#COLOR YELLOW
+#SCROLL 100 System Initializing...
+```
+
+#### Alerts
+```
+#SIZE 3
+#COLOR RED
+#SCROLL 200 WARNING: High Temperature
+```
+
+#### Information Display
+```
+#SIZE 1
+#COLOR CYAN
+#SCROLL 50 Sensor readings updated
+```
+
+### Important Notes
+
+- Blocking operation (code waits until scroll completes)
+- Can interrupt by sending new command
+- Text width automatically calculated
+- Scrolls until text fully off-screen
+- Maximum text length limited by String buffer
+- May overlap with other display content
+
+---
+
+## Command Macros
+
+Define and execute multi-command sequences for automation.
+
+### Commands
+
+#### Define Macro
+```
+#MACRODEF <id> <cmd1>;<cmd2>;<cmd3>...
+```
+
+Define a macro with multiple commands.
+
+**Parameters:**
+- `id`: Macro ID (0-2)
+- Commands separated by semicolons (max 5 commands)
+
+**Examples:**
+```
+#MACRODEF 0 #CLR;#SIZE 3;#COLOR RED
+#MACRODEF 1 #LOGSTART 100 0;#STATSSTART 0;#THRESHOLD 0 100 900
+#MACRODEF 2 #PWMSET 9 128;#PWMSET 10 64;#PWMSET 11 32
+```
+
+**Response:**
+```
+MACRO_DEF: ID=0, Commands=3
+```
+
+#### Run Macro
+```
+#MACRORUN <id>
+```
+
+Execute a defined macro.
+
+**Example:**
+```
+#MACRORUN 0
+```
+
+**Response:**
+```
+MACRO_RUN: ID=0
+  [1/3] #CLR
+OK:CLR
+  [2/3] #SIZE 3
+OK:SIZE_3
+  [3/3] #COLOR RED
+OK:COLOR RED
+MACRO_DONE
+```
+
+#### List Macros
+```
+#MACROLIST
+```
+
+Display all defined macros.
+
+**Response:**
+```
+=== MACROS ===
+Macro 0: 3 commands
+  1. #CLR
+  2. #SIZE 3
+  3. #COLOR RED
+Macro 1: Not defined
+Macro 2: 2 commands
+  1. #PWMSET 9 128
+  2. #PWMSET 10 64
+==============
+```
+
+#### Clear Macro
+```
+#MACROCLEAR <id>
+```
+
+Delete a macro definition.
+
+**Example:**
+```
+#MACROCLEAR 0
+```
+
+**Response:**
+```
+MACRO_CLEAR: ID=0
+```
+
+### Specifications
+
+- **Macro slots:** 3 (IDs: 0, 1, 2)
+- **Commands per macro:** Maximum 5
+- **Delay between commands:** 50ms
+- **Command format:** Same as normal commands (with or without #)
+
+### Use Cases
+
+#### Display Setup
+```
+#MACRODEF 0 #CLR;#SIZE 2;#COLOR CYAN;#POS 0 0
+#MACRORUN 0                 Quick display reset
+```
+
+#### Monitoring Setup
+```
+#MACRODEF 1 #STATSSTART 0;#STATSSTART 1;#THRESHOLD 0 100 900;#THRESHOLD 1 200 800
+#MACRORUN 1                 Start complete monitoring
+```
+
+#### PWM Pattern
+```
+#MACRODEF 2 #PWMSET 9 255;#PWMSET 10 128;#PWMSET 11 64;#PWMSET 12 32
+#MACRORUN 2                 Set LED brightness pattern
+```
+
+#### Testing Sequence
+```
+#MACRODEF 0 #ANALOGREADALL;#GPIOREADALL;#MEMINFO;#UPTIME
+#MACRORUN 0                 System status check
+```
+
+#### Configuration Switch
+```
+#MACRODEF 1 #ROT 1;#SIZE 2;#COLOR WHITE;#CLR
+#MACRORUN 1                 Portrait mode setup
+
+#MACRODEF 2 #ROT 3;#SIZE 3;#COLOR GREEN;#CLR
+#MACRORUN 2                 Landscape mode setup
+```
+
+### Important Notes
+
+- Macros not saved to EEPROM (lost on reset)
+- Commands execute sequentially
+- Each command's output is shown
+- Macro execution is blocking
+- Cannot nest macros (macro cannot call another macro)
+- 50ms delay between commands allows devices to respond
+- Invalid commands in macro will show error but continue to next command
+
+### Error Messages
+
+| Error | Cause | Solution |
+|-------|-------|----------|
+| ERR:ID_0_TO_2 | Invalid macro ID | Use 0, 1, or 2 |
+| ERR:NO_COMMANDS | Empty command string | Provide at least one command |
+| ERR:MACRO_X_NOT_DEFINED | Macro not defined | Define macro first |
+
+---
+
 ## Support and Documentation
 
 ### Getting Help
@@ -2523,10 +3306,11 @@ FREQ: 83.33Hz (83 pulses)      5,000 RPM
 - Send `#ID` for device identification
 
 ### Version Information
-- **Firmware:** MEGA Split Screen ILI9486 v2.0
-- **Features:** Split display, FPGA serial, I2C, SPI, EEPROM, Analog, GPIO, Touch, Widgets, Data Logging, Waveform Gen, Pulse/Freq Measurement
+- **Firmware:** MEGA Split Screen ILI9486 v2.1
+- **Features:** Split display, FPGA serial, I2C, SPI, EEPROM, Analog, GPIO, Touch, Widgets, Data Logging, Waveform Gen, PWM Control, System Info, Statistics, Threshold Alerts, Scrolling Text, Macros, Pulse/Freq Measurement
 - **Command Set:** Text-based serial protocol
 - **New in v2.0:** Display widgets, Data logging system, PWM waveform generator, Pulse/frequency measurement
+- **New in v2.1:** Direct PWM control, System info/benchmarks, Statistics tracking, Threshold alerts, Scrolling text animation, Command macros
 
 ### Notes
 - All commands start with `#` except plain text and FPGA passthrough (`>>>`)
@@ -2537,6 +3321,6 @@ FREQ: 83.33Hz (83 pulses)      5,000 RPM
 
 ---
 
-*Document Version: 1.0*
-*Last Updated: 2025-12-12*
-*Compatible with: mega_ili9486_split_text firmware*
+*Document Version: 2.1*
+*Last Updated: 2025-12-13*
+*Compatible with: mega_ili9486_split_text firmware v2.1*
