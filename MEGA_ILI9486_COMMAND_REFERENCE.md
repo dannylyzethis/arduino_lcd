@@ -543,6 +543,40 @@ Addr  | 00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F
 **Note:** Takes ~13 seconds to complete (all 4096 bytes)
 **Warning:** This operation is irreversible!
 
+#### Configure Write Protection
+```
+#EEPROMPROTECT <zone> <start> <end>    Set protection zone
+#EEPROMPROTECT <zone> OFF              Disable protection zone
+#EEPROMPROTECT?                        Show all protection zones
+```
+
+**Parameters:**
+- `zone` - Protection zone number (0-3, supports 4 zones)
+- `start` - Start address of protected range
+- `end` - End address of protected range
+
+**Examples:**
+```
+#EEPROMPROTECT 0 0 99          Protect addresses 0-99 (config area)
+#EEPROMPROTECT 1 500 999       Protect addresses 500-999
+#EEPROMPROTECT 1 OFF           Disable protection zone 1
+#EEPROMPROTECT?                Query all protection zones
+```
+
+**Response Examples:**
+```
+Zone 0: 0x00 - 0x63           (Zone 0 protected: addresses 0-99)
+ERR:PROTECTED_ADDR 50         (Attempt to write to protected address)
+Zone 1 DISABLED               (Zone disabled successfully)
+```
+
+**Notes:**
+- Zone 0 (addresses 0-99) is protected by default for config storage
+- Up to 4 independent protection zones can be configured
+- Protected addresses cannot be written via #EEPROMWRITE
+- Protection zones prevent accidental data corruption
+- Useful for reserving areas for calibration data, settings, etc.
+
 ### EEPROM Usage Examples
 
 #### Store Configuration
@@ -1563,10 +1597,11 @@ Advanced visualization widgets for creating dynamic dashboards and monitoring in
 Automatic data logging to internal EEPROM with circular buffer management. Stores timestamped sensor readings or GPIO states for later analysis.
 
 ### EEPROM Memory Map
-- **Addresses 0-99:** Reserved for configuration
-- **Addresses 100-4095:** Log data (circular buffer)
+- **Addresses 0-99:** Reserved for configuration (protected by default)
+- **Addresses 1000-4095:** Default log data zone (circular buffer)
 - **Log Entry Size:** 8 bytes per entry
-- **Maximum Entries:** ~499 entries
+- **Maximum Entries:** ~387 entries (with default zone)
+- **Note:** Log zone is configurable via #LOGZONE command
 
 ### Log Entry Format
 Each entry contains:
@@ -1665,6 +1700,38 @@ Entries: 145
 Next addr: 0x05B4
 ```
 
+#### Configure Log Zone
+```
+#LOGZONE <start> <end>       Set logging address range
+#LOGZONE?                    Query current log zone
+```
+
+**Parameters:**
+- `start` - Start address for logging (must not overlap protected zones)
+- `end` - End address for logging
+
+**Examples:**
+```
+#LOGZONE 1000 4095           Use addresses 1000-4095 (default)
+#LOGZONE 2000 3999           Use addresses 2000-3999 (2000 bytes)
+#LOGZONE?                    Query current zone
+```
+
+**Response Examples:**
+```
+LOG_ZONE: 0x3E8 - 0xFFF      (Zone configured: 1000-4095)
+Capacity: 387 entries        (Maximum entries in this zone)
+ERR:OVERLAPS_ZONE 0          (Zone overlaps with protected area)
+ERR:START >= END             (Invalid range)
+```
+
+**Notes:**
+- Default zone: 1000-4095 (3096 bytes, ~387 entries)
+- Logging zone cannot overlap with protected EEPROM zones
+- Changing zone resets write position and entry count
+- Use smaller zones to reserve EEPROM for other data
+- Calculate capacity: (end - start + 1) / 8 entries
+
 ### Logging Usage Examples
 
 #### Temperature Data Logger
@@ -1695,12 +1762,35 @@ Next addr: 0x05B4
 #LOGREAD                 View recent 10 entries
 ```
 
+#### EEPROM Zone Configuration Example
+```
+# Set up protection zones for dedicated storage
+#EEPROMPROTECT 0 0 99             Protect config area (default)
+#EEPROMPROTECT 1 100 299          Protect calibration data
+#EEPROMPROTECT 2 300 499          Protect user settings
+
+# Configure logging to use specific zone
+#LOGZONE 2000 4095                Set log zone (2000-4095)
+#LOGZONE?                         Verify configuration
+# Response: LOG_ZONE: 0x7D0 - 0xFFF
+# Response: Capacity: 262 entries
+
+# Now addresses 500-1999 remain free for other uses
+#EEPROMWRITE 500 0xAA             Write to unprotected area
+#EEPROMWRITE 50 0xFF              ERROR: Protected zone 0
+
+# Start logging in configured zone
+#LOGSTART 1000 0                  Log A8 every second
+```
+
 ### Important Notes
 - **Circular Buffer:** When full, oldest data is overwritten
 - **Power Loss:** Data persists in EEPROM after power cycle
 - **EEPROM Wear:** 100,000 write cycles per byte - consider interval vs. lifetime
 - **Background Operation:** Logging continues during other operations
 - **Timestamp:** Uses millis() - resets on power cycle
+- **Zone Protection:** Log zone cannot overlap with EEPROM protection zones
+- **Default Protection:** Addresses 0-99 are protected by default to prevent config corruption
 
 ---
 

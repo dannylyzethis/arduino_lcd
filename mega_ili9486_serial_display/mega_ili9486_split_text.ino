@@ -281,17 +281,45 @@ AnalogRefMode analogRefMode = AREF_DEFAULT;  // Default to 5V reference
 
 // ========== DATA LOGGING SYSTEM ==========
 // Data logging to EEPROM with circular buffer
-// EEPROM layout: [0-99] = config/reserved, [100-4095] = log data
-#define LOG_START_ADDR 100
-#define LOG_END_ADDR 4095
+// Default EEPROM layout: [0-99] = config/reserved, [1000-4095] = log data
+// Configurable and write-protected
+uint16_t logStartAddr = 1000;    // Configurable log start address
+uint16_t logEndAddr = 4095;      // Configurable log end address
 #define LOG_ENTRY_SIZE 8  // Timestamp(4) + Value(2) + Source(1) + Flags(1)
 
 bool loggingActive = false;
 unsigned long logInterval = 1000;  // milliseconds
 unsigned long lastLogTime = 0;
-uint16_t logWriteAddr = LOG_START_ADDR;
+uint16_t logWriteAddr = 1000;
 uint16_t logEntryCount = 0;
 uint8_t logSource = 0;  // 0=A8, 1=A9, ... 15=GPIO_REG
+
+// EEPROM Write Protection Zones (up to 4 protected ranges)
+#define MAX_PROTECT_ZONES 4
+struct ProtectZone {
+  uint16_t startAddr;
+  uint16_t endAddr;
+  bool enabled;
+};
+
+ProtectZone protectZones[MAX_PROTECT_ZONES] = {
+  {0, 99, true},      // Zone 0: Config area (0-99) - protected by default
+  {0, 0, false},      // Zone 1: User-defined
+  {0, 0, false},      // Zone 2: User-defined
+  {0, 0, false}       // Zone 3: User-defined
+};
+
+// Check if address is write-protected
+bool isProtected(uint16_t addr) {
+  for (uint8_t i = 0; i < MAX_PROTECT_ZONES; i++) {
+    if (protectZones[i].enabled) {
+      if (addr >= protectZones[i].startAddr && addr <= protectZones[i].endAddr) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
 
 // ========== WAVEFORM GENERATOR ==========
 // PWM-based waveform generation
@@ -1391,6 +1419,12 @@ void processCmd(String c) {
     } else if (c == "#EEPROMCLEAR") {
       handleEEPROMClear();
 
+    } else if (c.startsWith("#EEPROMPROTECT ")) {
+      handleEEPROMProtect(c.substring(15));
+
+    } else if (c == "#EEPROMPROTECT?") {
+      handleEEPROMProtect("?");
+
     // ========== ANALOG INPUT COMMANDS ==========
     } else if (c.startsWith("#ANALOGREAD ")) {
       handleAnalogRead(c.substring(12));
@@ -1436,6 +1470,12 @@ void processCmd(String c) {
 
     } else if (c == "#LOGSTATUS") {
       handleLogStatus();
+
+    } else if (c.startsWith("#LOGZONE ")) {
+      handleLogZone(c.substring(9));
+
+    } else if (c == "#LOGZONE?") {
+      handleLogZone("?");
 
     } else if (c.startsWith("#WAVEGEN ")) {
       handleWaveGen(c.substring(9));
@@ -1909,6 +1949,9 @@ void help() {
   Serial.println(F("  #EEPROMWRITE <addr> <value>"));
   Serial.println(F("  #EEPROMDUMP <start> <end>"));
   Serial.println(F("  #EEPROMCLEAR - Erase all"));
+  Serial.println(F("  #EEPROMPROTECT <zone> <start> <end>"));
+  Serial.println(F("  #EEPROMPROTECT <zone> OFF"));
+  Serial.println(F("  #EEPROMPROTECT? - Show zones"));
   Serial.println();
   Serial.println(F("ANALOG INPUT (A8-A15):"));
   Serial.println(F("  #ANALOGREAD <pin> - Read A8-A15"));
@@ -1931,6 +1974,8 @@ void help() {
   Serial.println(F("  #LOGSTATUS - Show log status"));
   Serial.println(F("  #LOGCONFIG <source> - Set source"));
   Serial.println(F("    source: 0-7=A8-A15, 15=GPIO"));
+  Serial.println(F("  #LOGZONE <start> <end> - Set zone"));
+  Serial.println(F("  #LOGZONE? - Query log zone"));
   Serial.println();
   Serial.println(F("WAVEFORM GENERATOR (PWM):"));
   Serial.println(F("  #WAVEGEN <pin> <type> <freq>"));
@@ -2256,6 +2301,13 @@ void handleEEPROMWrite(String params) {
     Serial.print(F("ERR:ADDR_RANGE (0-"));
     Serial.print(EEPROM.length() - 1);
     Serial.println(F(")"));
+    return;
+  }
+
+  // Check write protection
+  if (isProtected(addr)) {
+    Serial.print(F("ERR:PROTECTED_ADDR "));
+    Serial.println(addr);
     return;
   }
 
@@ -3394,13 +3446,13 @@ void updateDataLogger() {
 
     // Update write address (circular buffer)
     logWriteAddr = addr;
-    if (logWriteAddr > LOG_END_ADDR - LOG_ENTRY_SIZE) {
-      logWriteAddr = LOG_START_ADDR;
+    if (logWriteAddr > logEndAddr - LOG_ENTRY_SIZE) {
+      logWriteAddr = logStartAddr;
     }
 
     logEntryCount++;
-    if (logEntryCount > (LOG_END_ADDR - LOG_START_ADDR + 1) / LOG_ENTRY_SIZE) {
-      logEntryCount = (LOG_END_ADDR - LOG_START_ADDR + 1) / LOG_ENTRY_SIZE;
+    if (logEntryCount > (logEndAddr - logStartAddr + 1) / LOG_ENTRY_SIZE) {
+      logEntryCount = (logEndAddr - logStartAddr + 1) / LOG_ENTRY_SIZE;
     }
   }
 }
@@ -3420,6 +3472,10 @@ void handleLogStart(String params) {
 
   if (logInterval < 10) logInterval = 10;  // Min 10ms
   if (logSource > 15) logSource = 0;
+
+  // Initialize logging position
+  logWriteAddr = logStartAddr;
+  logEntryCount = 0;
 
   loggingActive = true;
   lastLogTime = millis();
@@ -3459,8 +3515,8 @@ void handleLogRead(String params) {
 
   // Read from oldest to newest
   uint16_t readAddr = logWriteAddr - (numEntries * LOG_ENTRY_SIZE);
-  if (readAddr < LOG_START_ADDR) {
-    readAddr = LOG_END_ADDR - (LOG_START_ADDR - readAddr) + 1;
+  if (readAddr < logStartAddr) {
+    readAddr = logEndAddr - (logStartAddr - readAddr) + 1;
   }
 
   for (uint16_t i = 0; i < numEntries; i++) {
@@ -3483,8 +3539,8 @@ void handleLogRead(String params) {
     readAddr++;
 
     // Wrap address
-    if (readAddr > LOG_END_ADDR) {
-      readAddr = LOG_START_ADDR;
+    if (readAddr > logEndAddr) {
+      readAddr = logStartAddr;
     }
 
     // Print entry
@@ -3504,7 +3560,7 @@ void handleLogRead(String params) {
 }
 
 void handleLogClear() {
-  logWriteAddr = LOG_START_ADDR;
+  logWriteAddr = logStartAddr;
   logEntryCount = 0;
   Serial.println(F("LOG_CLEARED"));
 }
@@ -3545,6 +3601,143 @@ void handleLogStatus() {
   Serial.println(logEntryCount);
   Serial.print(F("Next addr: 0x"));
   Serial.println(logWriteAddr, HEX);
+}
+
+void handleLogZone(String params) {
+  // #LOGZONE <start> <end> - Configure logging address range
+  // #LOGZONE ? - Query current range
+
+  if (params == "?") {
+    Serial.print(F("LOG_ZONE: 0x"));
+    Serial.print(logStartAddr, HEX);
+    Serial.print(F(" - 0x"));
+    Serial.println(logEndAddr, HEX);
+    uint16_t capacity = (logEndAddr - logStartAddr + 1) / LOG_ENTRY_SIZE;
+    Serial.print(F("Capacity: "));
+    Serial.print(capacity);
+    Serial.println(F(" entries"));
+    return;
+  }
+
+  int sp = params.indexOf(' ');
+  if (sp == -1) {
+    Serial.println(F("ERR:FORMAT #LOGZONE <start> <end>"));
+    return;
+  }
+
+  uint16_t start = parseHexOrDec(params.substring(0, sp));
+  uint16_t end = parseHexOrDec(params.substring(sp + 1));
+
+  if (start >= EEPROM.length() || end >= EEPROM.length()) {
+    Serial.println(F("ERR:ADDR_RANGE"));
+    return;
+  }
+
+  if (start >= end) {
+    Serial.println(F("ERR:START >= END"));
+    return;
+  }
+
+  // Check if any protection zones overlap
+  for (uint8_t i = 0; i < MAX_PROTECT_ZONES; i++) {
+    if (protectZones[i].enabled) {
+      if ((start >= protectZones[i].startAddr && start <= protectZones[i].endAddr) ||
+          (end >= protectZones[i].startAddr && end <= protectZones[i].endAddr)) {
+        Serial.print(F("ERR:OVERLAPS_ZONE "));
+        Serial.println(i);
+        return;
+      }
+    }
+  }
+
+  logStartAddr = start;
+  logEndAddr = end;
+  logWriteAddr = logStartAddr;
+  logEntryCount = 0;
+
+  Serial.print(F("LOG_ZONE: 0x"));
+  Serial.print(logStartAddr, HEX);
+  Serial.print(F(" - 0x"));
+  Serial.println(logEndAddr, HEX);
+}
+
+void handleEEPROMProtect(String params) {
+  // #EEPROMPROTECT <zone> <start> <end> - Configure protection zone
+  // #EEPROMPROTECT <zone> OFF - Disable protection zone
+  // #EEPROMPROTECT ? - Show all protection zones
+
+  if (params == "?") {
+    Serial.println(F("=== EEPROM PROTECTION ==="));
+    for (uint8_t i = 0; i < MAX_PROTECT_ZONES; i++) {
+      Serial.print(F("Zone "));
+      Serial.print(i);
+      Serial.print(F(": "));
+      if (protectZones[i].enabled) {
+        Serial.print(F("0x"));
+        Serial.print(protectZones[i].startAddr, HEX);
+        Serial.print(F(" - 0x"));
+        Serial.println(protectZones[i].endAddr, HEX);
+      } else {
+        Serial.println(F("DISABLED"));
+      }
+    }
+    return;
+  }
+
+  int sp = params.indexOf(' ');
+  if (sp == -1) {
+    Serial.println(F("ERR:FORMAT #EEPROMPROTECT <zone> <start> <end>"));
+    return;
+  }
+
+  uint8_t zone = params.substring(0, sp).toInt();
+  if (zone >= MAX_PROTECT_ZONES) {
+    Serial.print(F("ERR:ZONE_RANGE (0-"));
+    Serial.print(MAX_PROTECT_ZONES - 1);
+    Serial.println(F(")"));
+    return;
+  }
+
+  String rest = params.substring(sp + 1);
+  rest.trim();
+
+  if (rest.equalsIgnoreCase("OFF")) {
+    protectZones[zone].enabled = false;
+    Serial.print(F("Zone "));
+    Serial.print(zone);
+    Serial.println(F(" DISABLED"));
+    return;
+  }
+
+  sp = rest.indexOf(' ');
+  if (sp == -1) {
+    Serial.println(F("ERR:FORMAT #EEPROMPROTECT <zone> <start> <end>"));
+    return;
+  }
+
+  uint16_t start = parseHexOrDec(rest.substring(0, sp));
+  uint16_t end = parseHexOrDec(rest.substring(sp + 1));
+
+  if (start >= EEPROM.length() || end >= EEPROM.length()) {
+    Serial.println(F("ERR:ADDR_RANGE"));
+    return;
+  }
+
+  if (start > end) {
+    Serial.println(F("ERR:START > END"));
+    return;
+  }
+
+  protectZones[zone].startAddr = start;
+  protectZones[zone].endAddr = end;
+  protectZones[zone].enabled = true;
+
+  Serial.print(F("Zone "));
+  Serial.print(zone);
+  Serial.print(F(": 0x"));
+  Serial.print(start, HEX);
+  Serial.print(F(" - 0x"));
+  Serial.println(end, HEX);
 }
 
 // ========== WAVEFORM GENERATOR FUNCTIONS ==========
