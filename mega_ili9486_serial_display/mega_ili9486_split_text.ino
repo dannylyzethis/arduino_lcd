@@ -336,23 +336,23 @@ bool isProtected(uint16_t addr) {
 #define ADDR_MAGIC 0
 #define ADDR_VERSION 1
 #define ADDR_ROTATION 2
-#define ADDR_FPGA1_BAUD 3
-#define ADDR_FPGA2_BAUD 4
-#define ADDR_FPGA3_BAUD 5
-#define ADDR_FPGA1_TERM 6
-#define ADDR_FPGA2_TERM 7
-#define ADDR_FPGA3_TERM 8
-#define ADDR_FPGA_SEL 9
-#define ADDR_FPGA1_STOP 10
-#define ADDR_FPGA2_STOP 11
-#define ADDR_FPGA3_STOP 12
-#define ADDR_FPGA1_RX 13
-#define ADDR_FPGA2_RX 14
-#define ADDR_FPGA3_RX 15
-#define ADDR_FPGA1_PARSE 16
-#define ADDR_FPGA2_PARSE 17
-#define ADDR_FPGA3_PARSE 18
-// 19-31: Reserved
+#define ADDR_FPGA_SEL 3
+#define ADDR_FPGA1_BAUD 4         // 3 bytes (4,5,6)
+#define ADDR_FPGA2_BAUD 7         // 3 bytes (7,8,9)
+#define ADDR_FPGA3_BAUD 10        // 3 bytes (10,11,12)
+#define ADDR_FPGA1_TERM 13
+#define ADDR_FPGA2_TERM 14
+#define ADDR_FPGA3_TERM 15
+#define ADDR_FPGA1_STOP 16
+#define ADDR_FPGA2_STOP 17
+#define ADDR_FPGA3_STOP 18
+#define ADDR_FPGA1_RX 19
+#define ADDR_FPGA2_RX 20
+#define ADDR_FPGA3_RX 21
+#define ADDR_FPGA1_PARSE 22
+#define ADDR_FPGA2_PARSE 23
+#define ADDR_FPGA3_PARSE 24
+// 25-31: Reserved
 #define ADDR_BTN_UP 32      // 16 bytes: [0]=length, [1-15]=data
 #define ADDR_BTN_DOWN 48    // 16 bytes
 #define ADDR_BTN_LEFT 64    // 16 bytes
@@ -380,25 +380,39 @@ void saveConfig() {
   EEPROM.write(ADDR_VERSION, CONFIG_VERSION);
 
   // Display settings
-  EEPROM.write(ADDR_ROTATION, rotation);
+  EEPROM.write(ADDR_ROTATION, tft.getRotation());
 
   // FPGA settings
-  EEPROM.write(ADDR_FPGA_SEL, fpgaSelected);
-  EEPROM.write(ADDR_FPGA1_BAUD, fpga1BaudIdx);
-  EEPROM.write(ADDR_FPGA2_BAUD, fpga2BaudIdx);
-  EEPROM.write(ADDR_FPGA3_BAUD, fpga3BaudIdx);
-  EEPROM.write(ADDR_FPGA1_TERM, fpga1TermByte);
-  EEPROM.write(ADDR_FPGA2_TERM, fpga2TermByte);
-  EEPROM.write(ADDR_FPGA3_TERM, fpga3TermByte);
+  EEPROM.write(ADDR_FPGA_SEL, activeFpga);
+
+  // Store baud rates as 3-byte values (max 16777215)
+  EEPROM.write(ADDR_FPGA1_BAUD, (fpga1Baud >> 16) & 0xFF);
+  EEPROM.write(ADDR_FPGA1_BAUD + 1, (fpga1Baud >> 8) & 0xFF);
+  EEPROM.write(ADDR_FPGA1_BAUD + 2, fpga1Baud & 0xFF);
+
+  EEPROM.write(ADDR_FPGA2_BAUD, (fpga2Baud >> 16) & 0xFF);
+  EEPROM.write(ADDR_FPGA2_BAUD + 1, (fpga2Baud >> 8) & 0xFF);
+  EEPROM.write(ADDR_FPGA2_BAUD + 2, fpga2Baud & 0xFF);
+
+  EEPROM.write(ADDR_FPGA3_BAUD, (fpga3Baud >> 16) & 0xFF);
+  EEPROM.write(ADDR_FPGA3_BAUD + 1, (fpga3Baud >> 8) & 0xFF);
+  EEPROM.write(ADDR_FPGA3_BAUD + 2, fpga3Baud & 0xFF);
+
+  EEPROM.write(ADDR_FPGA1_TERM, (uint8_t)bypassTerm);  // Store term mode
+  EEPROM.write(ADDR_FPGA2_TERM, customTermByte);  // Store custom term byte
+  EEPROM.write(ADDR_FPGA3_TERM, 0);  // Reserved
+
   EEPROM.write(ADDR_FPGA1_STOP, fpga1StopBits);
   EEPROM.write(ADDR_FPGA2_STOP, fpga2StopBits);
   EEPROM.write(ADDR_FPGA3_STOP, fpga3StopBits);
-  EEPROM.write(ADDR_FPGA1_RX, fpga1RxMode);
-  EEPROM.write(ADDR_FPGA2_RX, fpga2RxMode);
-  EEPROM.write(ADDR_FPGA3_RX, fpga3RxMode);
-  EEPROM.write(ADDR_FPGA1_PARSE, fpga1ParseMode);
-  EEPROM.write(ADDR_FPGA2_PARSE, fpga2ParseMode);
-  EEPROM.write(ADDR_FPGA3_PARSE, fpga3ParseMode);
+
+  EEPROM.write(ADDR_FPGA1_RX, (uint8_t)fpga1RxMode);
+  EEPROM.write(ADDR_FPGA2_RX, (uint8_t)fpga2RxMode);
+  EEPROM.write(ADDR_FPGA3_RX, (uint8_t)fpga3RxMode);
+
+  EEPROM.write(ADDR_FPGA1_PARSE, (uint8_t)fpga1ParseMode);
+  EEPROM.write(ADDR_FPGA2_PARSE, (uint8_t)fpga2ParseMode);
+  EEPROM.write(ADDR_FPGA3_PARSE, (uint8_t)fpga3ParseMode);
 
   // Button configurations
   EEPROM.write(ADDR_BTN_UP, btnUp.length);
@@ -435,33 +449,52 @@ bool loadConfig() {
     return false;  // Version mismatch
   }
 
-  // Load display settings
-  rotation = EEPROM.read(ADDR_ROTATION);
-  if (rotation > 3) rotation = 0;
+  // Load display settings (will be applied after tft.begin)
+  uint8_t rot = EEPROM.read(ADDR_ROTATION);
+  if (rot > 3) rot = 0;
+  // Note: rotation applied in setup() after tft.begin()
 
   // Load FPGA settings
-  fpgaSelected = EEPROM.read(ADDR_FPGA_SEL);
-  if (fpgaSelected < 1 || fpgaSelected > 3) fpgaSelected = 1;
+  activeFpga = EEPROM.read(ADDR_FPGA_SEL);
+  if (activeFpga < 1 || activeFpga > 3) activeFpga = 1;
 
-  fpga1BaudIdx = EEPROM.read(ADDR_FPGA1_BAUD);
-  fpga2BaudIdx = EEPROM.read(ADDR_FPGA2_BAUD);
-  fpga3BaudIdx = EEPROM.read(ADDR_FPGA3_BAUD);
+  // Load baud rates (3 bytes each)
+  fpga1Baud = ((unsigned long)EEPROM.read(ADDR_FPGA1_BAUD) << 16) |
+              ((unsigned long)EEPROM.read(ADDR_FPGA1_BAUD + 1) << 8) |
+              EEPROM.read(ADDR_FPGA1_BAUD + 2);
+  if (fpga1Baud == 0 || fpga1Baud > 115200) fpga1Baud = 9600;
 
-  fpga1TermByte = EEPROM.read(ADDR_FPGA1_TERM);
-  fpga2TermByte = EEPROM.read(ADDR_FPGA2_TERM);
-  fpga3TermByte = EEPROM.read(ADDR_FPGA3_TERM);
+  fpga2Baud = ((unsigned long)EEPROM.read(ADDR_FPGA2_BAUD) << 16) |
+              ((unsigned long)EEPROM.read(ADDR_FPGA2_BAUD + 1) << 8) |
+              EEPROM.read(ADDR_FPGA2_BAUD + 2);
+  if (fpga2Baud == 0 || fpga2Baud > 115200) fpga2Baud = 9600;
 
+  fpga3Baud = ((unsigned long)EEPROM.read(ADDR_FPGA3_BAUD) << 16) |
+              ((unsigned long)EEPROM.read(ADDR_FPGA3_BAUD + 1) << 8) |
+              EEPROM.read(ADDR_FPGA3_BAUD + 2);
+  if (fpga3Baud == 0 || fpga3Baud > 115200) fpga3Baud = 9600;
+
+  // Load termination settings
+  bypassTerm = (TermMode)EEPROM.read(ADDR_FPGA1_TERM);
+  customTermByte = EEPROM.read(ADDR_FPGA2_TERM);
+
+  // Load stop bits
   fpga1StopBits = EEPROM.read(ADDR_FPGA1_STOP);
   fpga2StopBits = EEPROM.read(ADDR_FPGA2_STOP);
   fpga3StopBits = EEPROM.read(ADDR_FPGA3_STOP);
+  if (fpga1StopBits < 1 || fpga1StopBits > 2) fpga1StopBits = 1;
+  if (fpga2StopBits < 1 || fpga2StopBits > 2) fpga2StopBits = 1;
+  if (fpga3StopBits < 1 || fpga3StopBits > 2) fpga3StopBits = 1;
 
-  fpga1RxMode = EEPROM.read(ADDR_FPGA1_RX);
-  fpga2RxMode = EEPROM.read(ADDR_FPGA2_RX);
-  fpga3RxMode = EEPROM.read(ADDR_FPGA3_RX);
+  // Load RX modes
+  fpga1RxMode = (FPGARxMode)EEPROM.read(ADDR_FPGA1_RX);
+  fpga2RxMode = (FPGARxMode)EEPROM.read(ADDR_FPGA2_RX);
+  fpga3RxMode = (FPGARxMode)EEPROM.read(ADDR_FPGA3_RX);
 
-  fpga1ParseMode = EEPROM.read(ADDR_FPGA1_PARSE);
-  fpga2ParseMode = EEPROM.read(ADDR_FPGA2_PARSE);
-  fpga3ParseMode = EEPROM.read(ADDR_FPGA3_PARSE);
+  // Load parse modes
+  fpga1ParseMode = (FPGAParseMode)EEPROM.read(ADDR_FPGA1_PARSE);
+  fpga2ParseMode = (FPGAParseMode)EEPROM.read(ADDR_FPGA2_PARSE);
+  fpga3ParseMode = (FPGAParseMode)EEPROM.read(ADDR_FPGA3_PARSE);
 
   // Load button configurations
   btnUp.length = EEPROM.read(ADDR_BTN_UP);
@@ -526,9 +559,12 @@ void setup() {
   Serial.begin(115200);      // USB/PC
 
   // Load configuration from EEPROM if available
+  uint8_t savedRotation = 0;
   bool configLoaded = loadConfig();
   if (configLoaded) {
     Serial.println(F("[CONFIG] Loaded from EEPROM"));
+    savedRotation = EEPROM.read(ADDR_ROTATION);  // Get saved rotation
+    if (savedRotation > 3) savedRotation = 0;
   } else {
     Serial.println(F("[CONFIG] Using defaults (no saved config)"));
   }
@@ -543,7 +579,7 @@ void setup() {
   Serial.println(ID, HEX);
 
   tft.begin(ID);
-  tft.setRotation(rotation);  // Apply rotation from config
+  tft.setRotation(savedRotation);  // Apply rotation from config
   screenW = tft.width();
   screenH = tft.height();
 
@@ -3974,23 +4010,44 @@ void handleConfigSave() {
 void handleConfigLoad() {
   if (loadConfig()) {
     // Apply rotation
-    tft.setRotation(rotation);
+    uint8_t rot = EEPROM.read(ADDR_ROTATION);
+    if (rot > 3) rot = 0;
+    tft.setRotation(rot);
+
+    // Update screen dimensions
+    screenW = tft.width();
+    screenH = tft.height();
+    dividerY = screenH / 2;
+    topMaxY = dividerY - 2;
+    bottomMinY = dividerY + 2;
+    bottomMaxY = screenH;
 
     // Reinitialize buttons with new config
     initButtons();
 
     Serial.println(F("CONFIG_LOADED"));
     Serial.print(F("Rotation: "));
-    Serial.println(rotation);
+    Serial.println(rot);
   } else {
     Serial.println(F("ERR:NO_CONFIG_FOUND"));
   }
 }
 
 void handleConfigReset() {
-  // Reset to defaults
-  rotation = 0;
-  fpgaSelected = 1;
+  // Reset display to defaults
+  tft.setRotation(0);
+  screenW = tft.width();
+  screenH = tft.height();
+  dividerY = screenH / 2;
+  topMaxY = dividerY - 2;
+  bottomMinY = dividerY + 2;
+  bottomMaxY = screenH;
+
+  // Reset FPGA defaults
+  activeFpga = 1;
+  fpga1Baud = 9600;
+  fpga2Baud = 9600;
+  fpga3Baud = 9600;
 
   // Reset button configs to defaults
   btnUp.length = 2;
@@ -4020,17 +4077,17 @@ void handleConfigShow() {
 
   // Display settings
   Serial.print(F("Rotation: "));
-  Serial.println(rotation);
+  Serial.println(tft.getRotation());
 
   // FPGA settings
   Serial.print(F("FPGA Selected: "));
-  Serial.println(fpgaSelected);
+  Serial.println(activeFpga);
   Serial.print(F("FPGA1 Baud: "));
-  Serial.println(validBauds[fpga1BaudIdx]);
+  Serial.println(fpga1Baud);
   Serial.print(F("FPGA2 Baud: "));
-  Serial.println(validBauds[fpga2BaudIdx]);
+  Serial.println(fpga2Baud);
   Serial.print(F("FPGA3 Baud: "));
-  Serial.println(validBauds[fpga3BaudIdx]);
+  Serial.println(fpga3Baud);
 
   // Button configurations
   Serial.println(F("Button Configs:"));
