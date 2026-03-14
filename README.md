@@ -1,14 +1,14 @@
-# Arduino LCD + FPGA Control (Mega / ILI9486)
+# SAM (Smart Arduino Monitor) - Arduino LCD + FPGA Control
 
 This repository contains Arduino display + control firmware, with the **primary target on this branch** being:
 
 - `mega_ili9486_serial_display/mega_ili9486_split_text.ino`
 
-The Mega firmware is a split-screen control console for FPGA and peripherals, with both serial commands and touch-driven menu navigation.
+SAM (Smart Arduino Monitor) is the Mega firmware in this repository: a split/full-screen control console for FPGA and peripherals, with serial commands and touch-driven navigation.
 
 ## Branch Scope
 
-- Branch: `claude/touch-menu-expanded-VsW5B`
+- Branch: `codex/mega-foundation-features`
 - Primary MCU: **Arduino Mega 2560**
 - Primary display: **ILI9486/ILI9488 320x480** using `MCUFRIEND_kbv`
 - Legacy path also exists: `ili9341_serial_display/` (older Uno/ILI9341 workflow)
@@ -23,6 +23,11 @@ The Mega firmware is a split-screen control console for FPGA and peripherals, wi
   - Hierarchical `#MENU` system
 - Manages up to 3 FPGA serial channels (Serial1/2/3)
 - Supports protocol framing/termination and binary/text parsing modes
+- Optional address-byte routing (`#ADDRMODE`, `#ADDR`, `#ADDRSEND`)
+- Optional serial bridge/sniffer output (`#BRIDGE`) with channel/timestamp tags
+- Watch mode + health telemetry (`#WATCH`, `#HEALTH`, `#HEALTHRESET`)
+- Event hook automation to macros for GPIO and threshold transitions (`#HOOK ...`)
+- Split/fullscreen runtime view toggle (`#VIEW ...` + top-right touch corner)
 - Includes onboard utility subsystems:
   - GPIO monitor/control
   - I2C tools
@@ -98,9 +103,11 @@ Tips:
 1. Open serial monitor/terminal at **115200 baud**.
 2. Send `#HELP` and confirm command help prints.
 3. Send `#STATUS` and verify current FPGA/display settings.
-4. Send `#MENU` and test one touch selection.
+4. Send `#VERSION` and confirm firmware/build string.
+5. Send `#MENU` and test one touch selection.
 5. If touch is offset, run:
    - `#TOUCHTEST`
+- Touch top-right corner toggles split/full view
    - `#TOUCHCAL <minx> <maxx> <miny> <maxy>`
 
 ## Command Model
@@ -117,6 +124,8 @@ Commands are line-based text over USB serial.
 
 - `#HELP`
 - `#STATUS`
+- `#VERSION`
+- `#VIEW <SPLIT|FULL|?>`
 - `#CLR` / `#CLEAR`
 - `#CLRBOT`
 - `#CLRALL`
@@ -151,11 +160,17 @@ Commands are line-based text over USB serial.
 - `#FPGAREAD <num_bytes> [timeout_ms]`
 - `#FPGAQUERY <send_hex...> <expect_bytes> [timeout_ms]`
 - `#FPGAPING`
+- `#ADDRMODE <ON|OFF|?>`
+- `#ADDR <value|?>`
+- `#ADDRSEND <hex bytes...>`
+- `#FRAME <ON|OFF|?>`
+- `#BRIDGE <ON|OFF|?>`
 - `>>>text`
 
 ### GPIO
 
 - `#GPIOMODE <pin> <IN|INPU|OUT>`
+- `#HOOK GPIO <pin> <RISE|FALL|BOTH|NONE> <macro> [cooldown_ms]`
 - `#GPIOWRITE <pin> <0|1|HIGH|LOW>`
 - `#GPIOREAD <pin>`
 - `#GPIOREADALL`
@@ -190,6 +205,7 @@ Commands are line-based text over USB serial.
 ### Analog
 
 - `#ANALOGREAD <pin>`
+- `#HOOK THR <0-7> <ENTER|EXIT|BOTH|NONE> <macro> [cooldown_ms]`
 - `#ANALOGREADALL`
 - `#ANALOGREF <DEFAULT|INTERNAL>`
 - `#ANALOGAVG <1-16>`
@@ -260,3 +276,33 @@ Menu implementation is split across:
 The files in `ili9341_serial_display/` are retained for older workflows and are not the authoritative docs for the Mega feature set on this branch.
 
 For this branch, use this `README.md` + runtime `#HELP` output as primary reference.
+
+## Branch Feature Status (Mega Foundation)
+
+Implemented on `codex/mega-foundation-features`:
+
+- Protocol foundation toggles and status wiring (`#ADDRMODE`, `#ADDR`, `#ADDRSEND`, `#FRAME`, `#BRIDGE`)
+- Serial watch mode and health/counter reporting (`#WATCH`, `#HEALTH`, `#HEALTHRESET`)
+- GPIO/threshold event hooks with macro guard (`#HOOK GPIO`, `#HOOK THR`, recursion depth limit)
+- View mode persistence and runtime toggles (`#VIEW`, touch top-right quick toggle)
+- Framing-aware touch button TX path
+
+Compatibility notes:
+
+- New protocol behaviors are default OFF for backward compatibility.
+- Existing command workflows remain unchanged when these modes are OFF.
+
+## Current Build Snapshot (SAM on Mega 2560)
+
+Validated via `arduino-cli compile` on March 14, 2026 (temp staging sketch rename only):
+
+- Flash: `127,364 / 253,952` bytes (`50%`)
+- RAM: `5,256 / 8,192` bytes (`64%`)
+- Estimated free RAM for locals/stack: `2,936` bytes
+
+
+## Firmware Versioning
+
+- Product name: `SAM (Smart Arduino Monitor)`
+- Runtime query command: `#VERSION`
+- Current firmware constant: `SAM_FIRMWARE_VERSION = 1.1.0`
