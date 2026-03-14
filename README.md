@@ -1,8 +1,8 @@
 # SAM (Smart Arduino Monitor) - Arduino LCD + FPGA Control
 
-This repository contains Arduino display + control firmware, with the **primary target on this branch** being:
+This repository contains Arduino display + control firmware, with the **primary target** being:
 
-- `mega_ili9486_serial_display/mega_ili9486_split_text.ino`
+- `mega_ili9486_serial_display/mega_ili9486_serial_display.ino`
 
 SAM (Smart Arduino Monitor) is the Mega firmware in this repository: a split/full-screen control console for FPGA and peripherals, with serial commands and touch-driven navigation.
 
@@ -16,7 +16,7 @@ Primary manual set:
 
 ## Branch Scope
 
-- Branch: `codex/sam-smart-features`
+- Branch: `modularize/split-subsystems`
 - Primary MCU: **Arduino Mega 2560**
 - Primary display: **ILI9486/ILI9488 320x480** using `MCUFRIEND_kbv`
 - Legacy path also exists: `ili9341_serial_display/` (older Uno/ILI9341 workflow)
@@ -52,14 +52,33 @@ Primary manual set:
 
 ## Repository Layout
 
-- `mega_ili9486_serial_display/`
-  - `mega_ili9486_split_text.ino` - main Mega firmware
-  - `MenuSystem.h/.cpp` - generic touch menu engine
-  - `MenuConfig.h/.cpp` - menu tree + FPGA callbacks
-- `ili9341_serial_display/`
-  - older sketch path (legacy workflow)
-- `Libraries/`
-  - vendored display libraries used at compile time
+```
+mega_ili9486_serial_display/
+├── mega_ili9486_serial_display.ino  ← main sketch (setup + loop only)
+├── sam_config.h                     ← constants, enums, structs
+├── sam_globals.h / .cpp             ← all global variable declarations/definitions
+├── sam_commands.h / .cpp            ← command parser, #HELP, watch, uptime
+├── sam_display.h / .cpp             ← LCD rendering, view mode, link indicators
+├── sam_touch.h / .cpp               ← touch calibration, button handling
+├── sam_gpio.h / .cpp                ← GPIO modes, events, register control
+├── sam_analog.h / .cpp              ← analog read, stats, thresholds
+├── sam_fpga_serial.h / .cpp         ← FPGA serial RX/TX, framing, bridge
+├── sam_logging.h / .cpp             ← data logger, event log, #WHY
+├── sam_eeprom.h / .cpp              ← EEPROM read/write/config persist
+├── sam_i2c.h / .cpp                 ← I2C scan/read/write
+├── sam_spi.h / .cpp                 ← SPI transfer/settings
+├── sam_waveform.h / .cpp            ← waveform gen, PWM, freq monitor
+├── sam_rules.h / .cpp               ← smart rules engine
+├── sam_macros.h / .cpp              ← macro define/run
+├── sam_hooks.h / .cpp               ← GPIO/threshold event hooks
+├── sam_failsafe.h / .cpp            ← escalation, failsafe, watchdog, reset cause
+├── MenuSystem.h / .cpp              ← generic touch menu engine
+└── MenuConfig.h / .cpp              ← menu tree + FPGA callbacks
+
+ili9341_serial_display/              ← legacy Uno/ILI9341 workflow
+Libraries/                           ← vendored display libraries
+docs/manual/                         ← operator manual + command reference
+```
 
 ## Hardware Mapping (Mega Path)
 
@@ -102,18 +121,15 @@ Run from repo root:
 arduino-cli core update-index
 arduino-cli core install arduino:avr
 
-arduino-cli compile --fqbn arduino:avr:mega --libraries ".\\Libraries" ".\\_compile_stage_mega"
-arduino-cli upload -p COM3 --fqbn arduino:avr:mega ".\\_compile_stage_mega"
+arduino-cli compile --fqbn arduino:avr:mega ".\mega_ili9486_serial_display"
+arduino-cli upload -p COM3 --fqbn arduino:avr:mega ".\mega_ili9486_serial_display"
 ```
 
 Tips:
 
 - Replace `COM3` with your actual board port.
 - Use `arduino-cli board list` to discover the port.
-- If upload fails because serial port is busy, close Serial Monitor/terminal first.
-- Staging note: `arduino-cli` expects sketch file/folder names to match. This repo keeps
-  `mega_ili9486_split_text.ino` in `mega_ili9486_serial_display/`, so use a temporary staged
-  folder (for example `_compile_stage_mega`) with the file copied/renamed to `_compile_stage_mega.ino`.
+- If upload fails because the serial port is busy, close Serial Monitor first.
 
 ## First Boot Checklist
 
@@ -122,10 +138,10 @@ Tips:
 3. Send `#STATUS` and verify current FPGA/display settings.
 4. Send `#VERSION` and confirm firmware/build string.
 5. Send `#MENU` and test one touch selection.
-5. If touch is offset, run:
-   - `#TOUCHTEST`
-- Touch top-right corner toggles split/full view
-   - `#TOUCHCAL <minx> <maxx> <miny> <maxy>`
+6. If touch is offset, run:
+   - `#TOUCHTEST` — touch corners to find raw values
+   - `#TOUCHCAL <minx> <maxx> <miny> <maxy>` — apply calibration
+   - Touch top-right corner toggles split/full view
 
 ## Command Model
 
@@ -187,13 +203,13 @@ Commands are line-based text over USB serial.
 ### GPIO
 
 - `#GPIOMODE <pin> <IN|INPU|OUT>`
-- `#HOOK GPIO <pin> <RISE|FALL|BOTH|NONE> <macro> [cooldown_ms]`
 - `#GPIOWRITE <pin> <0|1|HIGH|LOW>`
 - `#GPIOREAD <pin>`
 - `#GPIOREADALL`
 - `#GPIOEVENT <pin> <NONE|RISING|FALLING|BOTH>`
 - `#GPIOREG`
 - `#GPIOSET <0x000000-0xFFFFFF>`
+- `#HOOK GPIO <pin> <RISE|FALL|BOTH|NONE> <macro> [cooldown_ms]`
 
 ### Smart Ops
 
@@ -234,10 +250,10 @@ Commands are line-based text over USB serial.
 ### Analog
 
 - `#ANALOGREAD <pin>`
-- `#HOOK THR <0-7> <ENTER|EXIT|BOTH|NONE> <macro> [cooldown_ms]`
 - `#ANALOGREADALL`
 - `#ANALOGREF <DEFAULT|INTERNAL>`
 - `#ANALOGAVG <1-16>`
+- `#HOOK THR <0-7> <ENTER|EXIT|BOTH|NONE> <macro> [cooldown_ms]`
 
 ## Menu System Details
 
@@ -302,39 +318,17 @@ Menu implementation is split across:
 
 ## Legacy Documentation
 
-The files in `ili9341_serial_display/` are retained for older workflows and are not the authoritative docs for the Mega feature set on this branch.
+The files in `ili9341_serial_display/` are retained for older workflows and are not the authoritative docs for the Mega feature set.
 
 For this branch, use this `README.md` + runtime `#HELP` output as primary reference.
 
-## Branch Feature Status (SAM Smart Features)
-
-Implemented on `codex/sam-smart-features`:
-
-- Protocol foundation toggles and status wiring (`#ADDRMODE`, `#ADDR`, `#ADDRSEND`, `#FRAME`, `#BRIDGE`)
-- Serial watch mode and health/counter reporting (`#WATCH`, `#HEALTH`, `#HEALTHRESET`)
-- GPIO/threshold event hooks with macro guard (`#HOOK GPIO`, `#HOOK THR`, recursion depth limit)
-- View mode persistence and runtime toggles (`#VIEW`, touch top-right quick toggle)
-- Framing-aware touch button TX path
-- Rule/event intelligence + event ring log (`#RULE`, `#LOG`)
-- 24 GPIO expansion with PWM conflict guards (`ERR:PIN_BUSY_PWM` / `ERR:PIN_BUSY_GPIO`)
-- Watchdog control and reset diagnostics (`#WDT`, status/health reset cause)
-- Failsafe auto-recovery (`#SAFE`)
-- Last-trigger explainability (`#WHY`)
-- Serial parser hardening for noisy prefixes/first-command reliability
-
-Compatibility notes:
-
-- New protocol behaviors are default OFF for backward compatibility.
-- Existing command workflows remain unchanged when these modes are OFF.
-
 ## Current Build Snapshot (SAM on Mega 2560)
 
-Validated via `arduino-cli compile` on March 14, 2026 (temp staging sketch rename only):
+Validated via `arduino-cli compile` on March 14, 2026:
 
-- Flash: `143,846 / 253,952` bytes (`56%`)
-- RAM: `6,408 / 8,192` bytes (`78%`)
-- Estimated free RAM for locals/stack: `1,784` bytes
-
+- Flash: `144,536 / 253,952` bytes (`56%`)
+- RAM: `6,410 / 8,192` bytes (`78%`)
+- Estimated free RAM for locals/stack: `1,782` bytes
 
 ## Firmware Versioning
 
