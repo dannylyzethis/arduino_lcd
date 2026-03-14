@@ -178,6 +178,7 @@ uint8_t bottomTextSize = 1;
 String cmd = "";
 bool cmdReady = false;
 String fpgaBuffer = "";
+unsigned long serialRxEnableMs = 0;
 
 // FPGA settings
 uint8_t activeFpga = 1;  // 1, 2, or 3
@@ -1679,6 +1680,7 @@ void setup() {
   wdtEnabled = false;
 
   Serial.begin(115200);      // USB/PC
+  serialRxEnableMs = millis() + 250;
 
   // Load configuration from EEPROM if available
   uint8_t savedRotation = 0;
@@ -2157,10 +2159,30 @@ void checkFPGASerial(HardwareSerial& serial, uint8_t id) {
 
 void serialEvent() {
   while (Serial.available()) {
+    if (millis() < serialRxEnableMs) {
+      (void)Serial.read();
+      cmd = "";
+      continue;
+    }
+
     char c = (char)Serial.read();
-    if (c == '\n') {
-      cmdReady = true;
-    } else if (c != '\r') {
+    if (c == '\n' || c == '\r') {
+      if (cmd.length() > 0) {
+        int hashPos = cmd.indexOf('#');
+        int passPos = cmd.indexOf(">>>");
+        int startPos = -1;
+        if (hashPos >= 0 && passPos >= 0) startPos = min(hashPos, passPos);
+        else if (hashPos >= 0) startPos = hashPos;
+        else if (passPos >= 0) startPos = passPos;
+
+        if (startPos > 0) {
+          cmd = cmd.substring(startPos);
+        } else if (startPos < 0) {
+          cmd = "";
+        }
+      }
+      if (cmd.length() > 0) cmdReady = true;
+    } else {
       if (cmd.length() < 290) {
         cmd += c;
       }
