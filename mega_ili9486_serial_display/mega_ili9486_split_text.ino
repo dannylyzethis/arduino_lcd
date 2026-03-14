@@ -47,19 +47,19 @@
  * - Applies to: >>> bypass, touch buttons, #FPGASEND, #FPGABYTES, #FPGAPING
  * - Ensures proper framing for all FPGA/embedded communication
  *
- * GPIO System (Pins 22-29 on side connector):
- * - 8 configurable I/O pins available
+ * GPIO System (Pins 22-45 on side connector):
+ * - 24 configurable I/O pins available
  * - Modes: INPUT, INPUT_PULLUP, OUTPUT
  * - Event-driven: RISING, FALLING, or BOTH edge detection
- * - Register-based control: Set all 8 pins with single byte (0-255)
+ * - Register-based control: Set all 24 pins with 24-bit value (0x000000-0xFFFFFF)
  * - Events displayed on LCD bottom screen and logged to serial
  * Commands:
  *   #GPIOMODE 22 OUT     - Set pin 22 as output
  *   #GPIOWRITE 22 1      - Write HIGH to pin 22
  *   #GPIOREAD 23         - Read pin 23
  *   #GPIOEVENT 24 RISING - Trigger event on pin 24 rising edge
- *   #GPIOREG             - Show 8-bit register (all pins)
- *   #GPIOSET 255         - Set register to 0xFF (all HIGH)
+ *   #GPIOREG             - Show 24-bit register (all pins)
+ *   #GPIOSET 0xFFFFFF    - Set register high on all 24 pins
  *
  * I2C System (Wire library - SDA=20, SCL=21):
  * - Communicate with I2C devices (sensors, EEPROMs, etc.)
@@ -113,13 +113,14 @@
 #include <Wire.h>      // I2C library
 #include <SPI.h>       // SPI library
 #include <EEPROM.h>    // Internal EEPROM library
+#include <avr/wdt.h>   // Hardware watchdog
 #include "MenuSystem.h"    // Menu system
 #include "MenuConfig.h"    // Menu configuration
 
 MCUFRIEND_kbv tft;
 
 #define SAM_FIRMWARE_NAME "SAM Smart Arduino Monitor"
-#define SAM_FIRMWARE_VERSION "1.1.0"
+#define SAM_FIRMWARE_VERSION "1.2.0"
 
 // Touchscreen pins (standard MCUFRIEND configuration for Mega)
 #define YP A3  // Y+ is on Analog3
@@ -177,6 +178,7 @@ uint8_t bottomTextSize = 1;
 String cmd = "";
 bool cmdReady = false;
 String fpgaBuffer = "";
+unsigned long serialRxEnableMs = 0;
 
 // FPGA settings
 uint8_t activeFpga = 1;  // 1, 2, or 3
@@ -242,10 +244,10 @@ unsigned long lastViewToggleTouch = 0;
 #define TOUCH_DEBOUNCE 200  // milliseconds
 
 // ========== GPIO SYSTEM ==========
-// GPIO pins available on Mega side connector (pins 22-29)
-// These are free and not used by LCD/Touch/Serial
-#define NUM_GPIO 8
-const uint8_t gpioPins[NUM_GPIO] = {22, 23, 24, 25, 26, 27, 28, 29};
+// GPIO pins available on Mega side connector (pins 22-45)
+// Expanded to 24 GPIOs (dynamic conflict checks with PWM/wave features)
+#define NUM_GPIO 24
+const uint8_t gpioPins[NUM_GPIO] = {22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45};
 
 // GPIO modes
 enum GPIOMode {
@@ -333,6 +335,77 @@ struct Macro {
 };
 Macro macros[MAX_MACROS];
 
+// Smart rule engine (v1)
+#define MAX_RULES 6
+
+enum RuleSourceType {
+  RULE_SRC_ANALOG = 0,
+  RULE_SRC_GPIO = 1
+};
+
+enum RuleOp {
+  RULE_OP_GT = 0,
+  RULE_OP_LT,
+  RULE_OP_GE,
+  RULE_OP_LE,
+  RULE_OP_EQ,
+  RULE_OP_NE
+};
+
+enum RuleActionType {
+  RULE_ACT_MACRO = 0,
+  RULE_ACT_LOG,
+  RULE_ACT_ALERT
+};
+
+enum SmartProfileMode {
+  PROFILE_CUSTOM = 0,
+  PROFILE_SAFE,
+  PROFILE_BALANCED,
+  PROFILE_PERF
+};
+
+struct SmartRule {
+  bool enabled;
+  RuleSourceType srcType;
+  uint8_t srcIndex;        // Analog: 0..7 => A8..A15, GPIO: 0..7 => pins 22..29 index
+  RuleOp op;
+  int16_t value;
+  uint16_t holdMs;         // Condition must remain true for this duration
+  RuleActionType action;
+  uint8_t actionArg;       // Used for MACRO id
+  uint16_t cooldownMs;     // Minimum time between firings
+  unsigned long sinceMs;   // When condition became true
+  unsigned long lastFireMs;
+};
+SmartRule smartRules[MAX_RULES];
+bool rulesEnabled = true;
+unsigned long ruleEvalLastMs = 0;
+unsigned long ruleFireCount = 0;
+const uint16_t RULE_EVAL_INTERVAL_MS = 100;
+
+// Event log ring buffer (runtime diagnostics)
+#define EVENT_LOG_CAPACITY 6
+#define EVENT_LOG_MSG_LEN 22
+
+enum EventLogType {
+  EVLOG_RULE = 0,
+  EVLOG_GPIO,
+  EVLOG_THR,
+  EVLOG_ERR,
+  EVLOG_INFO
+};
+
+struct EventLogEntry {
+  unsigned long ms;
+  uint8_t type;
+  char msg[EVENT_LOG_MSG_LEN];
+};
+
+EventLogEntry eventLog[EVENT_LOG_CAPACITY];
+uint8_t eventLogHead = 0;
+uint8_t eventLogCount = 0;
+
 // Recursive macro protection
 uint8_t macroRunDepth = 0;
 const uint8_t MAX_MACRO_DEPTH = 2;
@@ -381,6 +454,54 @@ bool linkIndicatorsEnabled = false;  // OFF by default so text area stays clean
 String watchSource = "A8";
 unsigned long watchIntervalMs = 1000;
 unsigned long watchLastMs = 0;
+uint8_t smartProfile = PROFILE_CUSTOM;
+
+// Hardware watchdog (default OFF for backward compatibility)
+bool wdtEnabled = false;
+uint16_t wdtTimeoutMs = 1000;
+uint8_t bootResetCause = 0;
+char lastWhy[40] = "BOOT";
+unsigned long lastWhyMs = 0;
+
+#define ESC_METRIC_ERR 0x01
+#define ESC_METRIC_TIMEOUT 0x02
+#define ESC_METRIC_RULE 0x04
+
+struct EscalationPolicy {
+  bool enabled;
+  uint8_t metricMask;
+  uint16_t threshold;
+  uint16_t windowMs;
+  uint16_t cooldownMs;
+  RuleActionType action;
+  uint8_t actionArg;
+  unsigned long lastEvalMs;
+  unsigned long lastErrTotal;
+  unsigned long lastTimeoutTotal;
+  unsigned long lastRuleTotal;
+  unsigned long lastFireMs;
+  unsigned long fireCount;
+};
+EscalationPolicy escalation = {false, (uint8_t)(ESC_METRIC_ERR | ESC_METRIC_TIMEOUT), 3, 2000, 5000, RULE_ACT_ALERT, 0, 0, 0, 0, 0, 0, 0};
+
+struct FailsafePolicy {
+  bool enabled;
+  bool active;
+  uint16_t threshold;
+  uint16_t windowMs;
+  uint16_t holdMs;
+  unsigned long lastEvalMs;
+  unsigned long lastErrTotal;
+  unsigned long lastTimeoutTotal;
+  unsigned long lastEscTotal;
+  unsigned long enterMs;
+  unsigned long fireCount;
+  bool prevBridge;
+  bool prevWatch;
+  bool prevLinks;
+  bool prevRules;
+};
+FailsafePolicy failsafe = {false, false, 4, 2000, 8000, 0, 0, 0, 0, 0, 0, false, false, false, false};
 
 // Event hooks
 struct EventHook {
@@ -798,13 +919,14 @@ void updateWatch() {
 
   String msg = "WATCH ";
   if (watchSource == "GPIO") {
-    uint8_t regVal = 0;
+    uint32_t regVal = 0;
     for (uint8_t i = 0; i < NUM_GPIO; i++) {
-      if (digitalRead(gpioPins[i])) regVal |= (1 << i);
+      if (digitalRead(gpioPins[i])) regVal |= (1UL << i);
     }
+    char hx[9];
+    snprintf(hx, sizeof(hx), "%06lX", regVal & 0xFFFFFFUL);
     msg += "GPIO=0x";
-    if (regVal < 16) msg += "0";
-    msg += String(regVal, HEX);
+    msg += hx;
   } else {
     int idx = -1;
     if (watchSource.length() == 2 && watchSource[0] == 'A') idx = watchSource[1] - '8';
@@ -853,6 +975,670 @@ void drawLinkIndicators() {
   }
 }
 
+uint8_t pickWdtCfgForMs(uint16_t ms, uint16_t& appliedMs) {
+  if (ms <= 15)   { appliedMs = 15;   return WDTO_15MS; }
+  if (ms <= 30)   { appliedMs = 30;   return WDTO_30MS; }
+  if (ms <= 60)   { appliedMs = 60;   return WDTO_60MS; }
+  if (ms <= 120)  { appliedMs = 120;  return WDTO_120MS; }
+  if (ms <= 250)  { appliedMs = 250;  return WDTO_250MS; }
+  if (ms <= 500)  { appliedMs = 500;  return WDTO_500MS; }
+  if (ms <= 1000) { appliedMs = 1000; return WDTO_1S; }
+  if (ms <= 2000) { appliedMs = 2000; return WDTO_2S; }
+  if (ms <= 4000) { appliedMs = 4000; return WDTO_4S; }
+  appliedMs = 8000;
+  return WDTO_8S;
+}
+
+void setWatchdog(bool enable, uint16_t requestedMs) {
+  if (!enable) {
+    wdt_disable();
+    wdtEnabled = false;
+    return;
+  }
+  uint16_t applied = 1000;
+  uint8_t cfg = pickWdtCfgForMs(requestedMs, applied);
+  wdt_enable(cfg);
+  wdt_reset();
+  wdtEnabled = true;
+  wdtTimeoutMs = applied;
+}
+
+void printResetCause() {
+  if (bootResetCause == 0) {
+    Serial.println(F("UNKNOWN"));
+    return;
+  }
+  bool any = false;
+  if (bootResetCause & _BV(PORF)) { Serial.print(F("POR ")); any = true; }
+  if (bootResetCause & _BV(EXTRF)) { Serial.print(F("EXT ")); any = true; }
+  if (bootResetCause & _BV(BORF)) { Serial.print(F("BROWNOUT ")); any = true; }
+  if (bootResetCause & _BV(WDRF)) { Serial.print(F("WDT ")); any = true; }
+  if (!any) Serial.print(F("OTHER"));
+  Serial.println();
+}
+
+const __FlashStringHelper* profileName(uint8_t p) {
+  switch (p) {
+    case PROFILE_SAFE: return F("SAFE");
+    case PROFILE_BALANCED: return F("BALANCED");
+    case PROFILE_PERF: return F("PERF");
+    default: return F("CUSTOM");
+  }
+}
+
+unsigned long getTotalLinkErrors() {
+  unsigned long total = 0;
+  for (uint8_t id = 1; id <= 3; id++) {
+    total += fpgaFrameErr[id];
+    total += fpgaDropped[id];
+  }
+  return total;
+}
+
+unsigned long getTotalTimeouts() {
+  unsigned long total = 0;
+  for (uint8_t id = 1; id <= 3; id++) total += fpgaTimeouts[id];
+  return total;
+}
+
+uint8_t calcLinkQuality(uint8_t id) {
+  if (id < 1 || id > 3) return 0;
+  unsigned long now = millis();
+  unsigned long age = now - fpgaLastActivityMs[id];
+  unsigned long rx = fpgaRxBytes[id];
+  unsigned long err = fpgaFrameErr[id] + fpgaDropped[id] + fpgaTimeouts[id];
+  int16_t score = 100;
+
+  if (age > 8000) score -= 55;
+  else if (age > 3000) score -= 30;
+  else if (age > 1200) score -= 12;
+
+  if (rx == 0 && age > 3000) score -= 15;
+
+  if (rx > 0) {
+    uint8_t errPct = (uint8_t)min(100UL, (err * 100UL) / rx);
+    score -= (int16_t)min((uint8_t)60, (uint8_t)(errPct * 2));
+  } else {
+    score -= (int16_t)min(35UL, err * 5UL);
+  }
+
+  if (score < 0) score = 0;
+  if (score > 100) score = 100;
+  return (uint8_t)score;
+}
+
+const __FlashStringHelper* linkQualityLabel(uint8_t score) {
+  if (score >= 90) return F("EXCELLENT");
+  if (score >= 75) return F("GOOD");
+  if (score >= 55) return F("FAIR");
+  if (score >= 35) return F("POOR");
+  return F("BAD");
+}
+
+void printLinkSummary() {
+  Serial.println(F("=== LINK QUALITY ==="));
+  Serial.print(F("Indicators: "));
+  Serial.println(linkIndicatorsEnabled ? F("ON") : F("OFF"));
+  for (uint8_t id = 1; id <= 3; id++) {
+    uint8_t score = calcLinkQuality(id);
+    Serial.print(F("F"));
+    Serial.print(id);
+    Serial.print(F(": Q="));
+    Serial.print(score);
+    Serial.print(F("% "));
+    Serial.print(linkQualityLabel(score));
+    Serial.print(F(" RX="));
+    Serial.print(fpgaRxBytes[id]);
+    Serial.print(F(" ERR="));
+    Serial.print(fpgaFrameErr[id] + fpgaDropped[id]);
+    Serial.print(F(" TO="));
+    Serial.println(fpgaTimeouts[id]);
+  }
+}
+
+bool parseEscAction(String actionRaw, RuleActionType& action, uint8_t& actionArg) {
+  String actionUp = actionRaw;
+  actionUp.trim();
+  actionUp.toUpperCase();
+  if (actionUp.startsWith("MACRO ")) {
+    int id = actionUp.substring(6).toInt();
+    if (id < 0 || id >= MAX_MACROS) return false;
+    action = RULE_ACT_MACRO;
+    actionArg = (uint8_t)id;
+    return true;
+  }
+  if (actionUp == "LOG") {
+    action = RULE_ACT_LOG;
+    actionArg = 0;
+    return true;
+  }
+  if (actionUp == "ALERT") {
+    action = RULE_ACT_ALERT;
+    actionArg = 0;
+    return true;
+  }
+  return false;
+}
+
+void fireEscalation(unsigned long dErr, unsigned long dTo, unsigned long dRule) {
+  escalation.fireCount++;
+  escalation.lastFireMs = millis();
+
+  char msg[EVENT_LOG_MSG_LEN];
+  snprintf(msg, sizeof(msg), "ESC dE=%lu dT=%lu dR=%lu", dErr, dTo, dRule);
+  addEventLogC(EVLOG_ERR, msg);
+  setWhy(msg);
+
+  if (escalation.action == RULE_ACT_MACRO) {
+    runMacroSafe(escalation.actionArg, F("ESC"));
+    Serial.print(F("ESCALATE:MACRO "));
+    Serial.println(escalation.actionArg);
+  } else if (escalation.action == RULE_ACT_LOG) {
+    Serial.print(F("ESCALATE: "));
+    Serial.println(msg);
+  } else {
+    String lcdMsg = "ESCALATE ";
+    lcdMsg += msg;
+    showTextBottom(lcdMsg);
+    Serial.print(F("ESCALATE:ALERT "));
+    Serial.println(msg);
+  }
+}
+
+void evaluateEscalation() {
+  if (!escalation.enabled) return;
+  unsigned long now = millis();
+  if (now - escalation.lastEvalMs < escalation.windowMs) return;
+
+  unsigned long totalErr = getTotalLinkErrors();
+  unsigned long totalTo = getTotalTimeouts();
+  unsigned long totalRule = ruleFireCount;
+  unsigned long dErr = totalErr - escalation.lastErrTotal;
+  unsigned long dTo = totalTo - escalation.lastTimeoutTotal;
+  unsigned long dRule = totalRule - escalation.lastRuleTotal;
+  bool hit = false;
+
+  if ((escalation.metricMask & ESC_METRIC_ERR) && dErr >= escalation.threshold) hit = true;
+  if ((escalation.metricMask & ESC_METRIC_TIMEOUT) && dTo >= escalation.threshold) hit = true;
+  if ((escalation.metricMask & ESC_METRIC_RULE) && dRule >= escalation.threshold) hit = true;
+
+  if (hit && (now - escalation.lastFireMs >= escalation.cooldownMs)) {
+    fireEscalation(dErr, dTo, dRule);
+  }
+
+  escalation.lastErrTotal = totalErr;
+  escalation.lastTimeoutTotal = totalTo;
+  escalation.lastRuleTotal = totalRule;
+  escalation.lastEvalMs = now;
+}
+
+void printEscalationStatus() {
+  Serial.print(F("ESC="));
+  Serial.println(escalation.enabled ? F("ON") : F("OFF"));
+  Serial.print(F("ESC_METRICS="));
+  if (escalation.metricMask & ESC_METRIC_ERR) Serial.print(F("ERR "));
+  if (escalation.metricMask & ESC_METRIC_TIMEOUT) Serial.print(F("TIMEOUT "));
+  if (escalation.metricMask & ESC_METRIC_RULE) Serial.print(F("RULE "));
+  Serial.println();
+  Serial.print(F("ESC_THRESHOLD=")); Serial.println(escalation.threshold);
+  Serial.print(F("ESC_WINDOW_MS=")); Serial.println(escalation.windowMs);
+  Serial.print(F("ESC_COOLDOWN_MS=")); Serial.println(escalation.cooldownMs);
+  Serial.print(F("ESC_ACTION="));
+  if (escalation.action == RULE_ACT_MACRO) {
+    Serial.print(F("MACRO "));
+    Serial.println(escalation.actionArg);
+  } else if (escalation.action == RULE_ACT_LOG) {
+    Serial.println(F("LOG"));
+  } else {
+    Serial.println(F("ALERT"));
+  }
+  Serial.print(F("ESC_FIRES=")); Serial.println(escalation.fireCount);
+}
+
+void printFailsafeStatus() {
+  Serial.print(F("SAFE="));
+  Serial.println(failsafe.enabled ? F("ON") : F("OFF"));
+  Serial.print(F("SAFE_ACTIVE="));
+  Serial.println(failsafe.active ? F("YES") : F("NO"));
+  Serial.print(F("SAFE_THRESHOLD=")); Serial.println(failsafe.threshold);
+  Serial.print(F("SAFE_WINDOW_MS=")); Serial.println(failsafe.windowMs);
+  Serial.print(F("SAFE_HOLD_MS=")); Serial.println(failsafe.holdMs);
+  Serial.print(F("SAFE_FIRES=")); Serial.println(failsafe.fireCount);
+}
+
+void exitFailsafe() {
+  if (!failsafe.active) return;
+  bridgeMode = failsafe.prevBridge;
+  watchEnabled = failsafe.prevWatch;
+  linkIndicatorsEnabled = failsafe.prevLinks;
+  rulesEnabled = failsafe.prevRules;
+  failsafe.active = false;
+  failsafe.lastErrTotal = getTotalLinkErrors();
+  failsafe.lastTimeoutTotal = getTotalTimeouts();
+  failsafe.lastEscTotal = escalation.fireCount;
+  failsafe.lastEvalMs = millis();
+  addEventLogC(EVLOG_INFO, "SAFE EXIT");
+  setWhy("SAFE EXIT");
+  Serial.println(F("SAFE:EXIT"));
+}
+
+void enterFailsafe(unsigned long dErr, unsigned long dTo, unsigned long dEsc) {
+  failsafe.active = true;
+  failsafe.enterMs = millis();
+  failsafe.fireCount++;
+  failsafe.prevBridge = bridgeMode;
+  failsafe.prevWatch = watchEnabled;
+  failsafe.prevLinks = linkIndicatorsEnabled;
+  failsafe.prevRules = rulesEnabled;
+
+  bridgeMode = false;
+  watchEnabled = false;
+  linkIndicatorsEnabled = false;
+  rulesEnabled = false;
+
+  char em[EVENT_LOG_MSG_LEN];
+  snprintf(em, sizeof(em), "SAFE e%lu t%lu s%lu", dErr, dTo, dEsc);
+  addEventLogC(EVLOG_ERR, em);
+  setWhy(em);
+  showTextBottom("SAFE MODE ACTIVE");
+  Serial.print(F("SAFE:ENTER "));
+  Serial.println(em);
+}
+
+void evaluateFailsafe() {
+  if (!failsafe.enabled) return;
+  unsigned long now = millis();
+
+  if (failsafe.active) {
+    if (now - failsafe.enterMs >= failsafe.holdMs) {
+      exitFailsafe();
+    } else {
+      return;
+    }
+  }
+
+  if (now - failsafe.lastEvalMs < failsafe.windowMs) return;
+
+  unsigned long totalErr = getTotalLinkErrors();
+  unsigned long totalTo = getTotalTimeouts();
+  unsigned long totalEsc = escalation.fireCount;
+  unsigned long dErr = totalErr - failsafe.lastErrTotal;
+  unsigned long dTo = totalTo - failsafe.lastTimeoutTotal;
+  unsigned long dEsc = totalEsc - failsafe.lastEscTotal;
+  unsigned long score = dErr + dTo + dEsc;
+
+  if (score >= failsafe.threshold) {
+    enterFailsafe(dErr, dTo, dEsc);
+  }
+
+  failsafe.lastErrTotal = totalErr;
+  failsafe.lastTimeoutTotal = totalTo;
+  failsafe.lastEscTotal = totalEsc;
+  failsafe.lastEvalMs = now;
+}
+
+void applySmartProfile(uint8_t profile) {
+  smartProfile = profile;
+  if (profile == PROFILE_SAFE) {
+    protoFrameMode = true;
+    bridgeMode = false;
+    watchEnabled = true;
+    watchSource = "A8";
+    watchIntervalMs = 1000;
+    linkIndicatorsEnabled = true;
+    rulesEnabled = true;
+    escalation.enabled = true;
+    escalation.metricMask = (uint8_t)(ESC_METRIC_ERR | ESC_METRIC_TIMEOUT);
+    escalation.threshold = 2;
+    escalation.windowMs = 2000;
+    escalation.cooldownMs = 5000;
+    escalation.action = RULE_ACT_ALERT;
+    escalation.actionArg = 0;
+    escalation.lastErrTotal = getTotalLinkErrors();
+    escalation.lastTimeoutTotal = getTotalTimeouts();
+    escalation.lastRuleTotal = ruleFireCount;
+    escalation.lastEvalMs = millis();
+  } else if (profile == PROFILE_BALANCED) {
+    protoFrameMode = false;
+    bridgeMode = false;
+    watchEnabled = true;
+    watchSource = "GPIO";
+    watchIntervalMs = 1500;
+    linkIndicatorsEnabled = true;
+    rulesEnabled = true;
+    escalation.enabled = true;
+    escalation.metricMask = (uint8_t)(ESC_METRIC_ERR | ESC_METRIC_TIMEOUT | ESC_METRIC_RULE);
+    escalation.threshold = 3;
+    escalation.windowMs = 3000;
+    escalation.cooldownMs = 6000;
+    escalation.action = RULE_ACT_LOG;
+    escalation.actionArg = 0;
+    escalation.lastErrTotal = getTotalLinkErrors();
+    escalation.lastTimeoutTotal = getTotalTimeouts();
+    escalation.lastRuleTotal = ruleFireCount;
+    escalation.lastEvalMs = millis();
+  } else if (profile == PROFILE_PERF) {
+    protoFrameMode = false;
+    bridgeMode = false;
+    watchEnabled = false;
+    linkIndicatorsEnabled = false;
+    rulesEnabled = true;
+    escalation.enabled = false;
+  }
+}
+
+void printSmartSummary() {
+  Serial.println(F("=== SMART SUMMARY ==="));
+  Serial.print(F("Profile: "));
+  Serial.println(profileName(smartProfile));
+  Serial.print(F("Uptime(ms): "));
+  Serial.println(millis());
+  Serial.print(F("FreeRAM: "));
+  int freeRam = getFreeRAM();
+  Serial.println(freeRam);
+  Serial.print(F("WDT: "));
+  if (wdtEnabled) {
+    Serial.print(F("ON @"));
+    Serial.print(wdtTimeoutMs);
+    Serial.println(F("ms"));
+  } else {
+    Serial.println(F("OFF"));
+  }
+  printLinkSummary();
+  Serial.print(F("Rule Fires: ")); Serial.println(ruleFireCount);
+  Serial.print(F("GPIO Events: ")); Serial.println(gpioEventCount);
+  Serial.print(F("Threshold Events: ")); Serial.println(thresholdEventCount);
+  Serial.print(F("Event Log Count: ")); Serial.println(eventLogCount);
+  printEscalationStatus();
+  printFailsafeStatus();
+
+  int16_t score = 100;
+  uint8_t q1 = calcLinkQuality(1);
+  uint8_t q2 = calcLinkQuality(2);
+  uint8_t q3 = calcLinkQuality(3);
+  uint8_t avgQ = (uint8_t)((q1 + q2 + q3) / 3);
+  if (avgQ < 60) score -= 20;
+  else if (avgQ < 80) score -= 10;
+  if (freeRam < 1500) score -= 20;
+  else if (freeRam < 2200) score -= 10;
+  if (getTotalLinkErrors() > 0) score -= min(20UL, getTotalLinkErrors());
+  if (!rulesEnabled) score -= 5;
+  if (score < 0) score = 0;
+  Serial.print(F("SMART_SCORE="));
+  Serial.println(score);
+  Serial.println(F("====================="));
+}
+
+
+void ruleOpToText(RuleOp op, String& out) {
+  switch (op) {
+    case RULE_OP_GT: out = ">"; break;
+    case RULE_OP_LT: out = "<"; break;
+    case RULE_OP_GE: out = ">="; break;
+    case RULE_OP_LE: out = "<="; break;
+    case RULE_OP_EQ: out = "=="; break;
+    case RULE_OP_NE: out = "!="; break;
+  }
+}
+
+bool ruleCompare(int16_t lhs, RuleOp op, int16_t rhs) {
+  switch (op) {
+    case RULE_OP_GT: return lhs > rhs;
+    case RULE_OP_LT: return lhs < rhs;
+    case RULE_OP_GE: return lhs >= rhs;
+    case RULE_OP_LE: return lhs <= rhs;
+    case RULE_OP_EQ: return lhs == rhs;
+    case RULE_OP_NE: return lhs != rhs;
+  }
+  return false;
+}
+
+int16_t readRuleSourceValue(const SmartRule& r) {
+  if (r.srcType == RULE_SRC_ANALOG) {
+    if (r.srcIndex < 8) return (int16_t)analogRead(analogPins[r.srcIndex]);
+    return 0;
+  }
+  if (r.srcType == RULE_SRC_GPIO) {
+    if (r.srcIndex < NUM_GPIO) return (int16_t)digitalRead(gpioPins[r.srcIndex]);
+    return 0;
+  }
+  return 0;
+}
+
+const __FlashStringHelper* eventTypeName(uint8_t t) {
+  switch (t) {
+    case EVLOG_RULE: return F("RULE");
+    case EVLOG_GPIO: return F("GPIO");
+    case EVLOG_THR:  return F("THR");
+    case EVLOG_ERR:  return F("ERR");
+    default:         return F("INFO");
+  }
+}
+
+void addEventLog(uint8_t type, const String& msg) {
+  EventLogEntry& e = eventLog[eventLogHead];
+  e.ms = millis();
+  e.type = type;
+
+  String m = msg;
+  if (m.length() >= (EVENT_LOG_MSG_LEN - 1)) {
+    m = m.substring(0, EVENT_LOG_MSG_LEN - 1);
+  }
+  m.toCharArray(e.msg, EVENT_LOG_MSG_LEN);
+
+  eventLogHead = (eventLogHead + 1) % EVENT_LOG_CAPACITY;
+  if (eventLogCount < EVENT_LOG_CAPACITY) eventLogCount++;
+}
+
+void addEventLogC(uint8_t type, const char* msg) {
+  EventLogEntry& e = eventLog[eventLogHead];
+  e.ms = millis();
+  e.type = type;
+  if (msg) {
+    strncpy(e.msg, msg, EVENT_LOG_MSG_LEN - 1);
+    e.msg[EVENT_LOG_MSG_LEN - 1] = '\0';
+  } else {
+    e.msg[0] = '\0';
+  }
+  eventLogHead = (eventLogHead + 1) % EVENT_LOG_CAPACITY;
+  if (eventLogCount < EVENT_LOG_CAPACITY) eventLogCount++;
+}
+
+void setWhy(const char* msg) {
+  if (!msg) return;
+  strncpy(lastWhy, msg, sizeof(lastWhy) - 1);
+  lastWhy[sizeof(lastWhy) - 1] = '\0';
+  lastWhyMs = millis();
+}
+
+int8_t parseEventTypeFilter(String s) {
+  s.trim();
+  s.toUpperCase();
+  if (s == "ALL" || s.length() == 0) return -1;
+  if (s == "RULE") return EVLOG_RULE;
+  if (s == "GPIO") return EVLOG_GPIO;
+  if (s == "THR" || s == "THRESH") return EVLOG_THR;
+  if (s == "ERR" || s == "ERROR") return EVLOG_ERR;
+  if (s == "INFO") return EVLOG_INFO;
+  return -2;
+}
+
+void printEventLogLast(uint8_t wanted, int8_t filterType) {
+  if (eventLogCount == 0) {
+    Serial.println(F("(no events)"));
+    return;
+  }
+
+  uint8_t printed = 0;
+  uint8_t scanned = 0;
+  int idx = (int)eventLogHead - 1;
+  if (idx < 0) idx += EVENT_LOG_CAPACITY;
+
+  while (scanned < eventLogCount && printed < wanted) {
+    EventLogEntry& e = eventLog[idx];
+    if (filterType < 0 || e.type == (uint8_t)filterType) {
+      Serial.print(F("["));
+      Serial.print(e.ms);
+      Serial.print(F("ms] "));
+      Serial.print(eventTypeName(e.type));
+      Serial.print(F(" "));
+      Serial.println(e.msg);
+      printed++;
+    }
+    scanned++;
+    idx--;
+    if (idx < 0) idx = EVENT_LOG_CAPACITY - 1;
+  }
+
+  if (printed == 0) Serial.println(F("(no matching events)"));
+}
+
+void triggerRuleAction(uint8_t ruleId, SmartRule& r, int16_t valueNow) {
+  ruleFireCount++;
+
+  if (r.action == RULE_ACT_MACRO) {
+    runMacroSafe(r.actionArg, F("RULE"));
+    Serial.print(F("RULE_FIRE #"));
+    Serial.print(ruleId);
+    Serial.print(F(" MACRO "));
+    Serial.println(r.actionArg);
+  } else if (r.action == RULE_ACT_LOG) {
+    Serial.print(F("RULE_LOG #"));
+    Serial.print(ruleId);
+    Serial.print(F(" val="));
+    Serial.println(valueNow);
+  } else {
+    char msg[28];
+    snprintf(msg, sizeof(msg), "RULE%u ALERT %d", ruleId, valueNow);
+    showTextBottom(String(msg));
+    Serial.print(F("RULE_ALERT #"));
+    Serial.print(ruleId);
+    Serial.print(F(" val="));
+    Serial.println(valueNow);
+  }
+
+  char em[EVENT_LOG_MSG_LEN];
+  snprintf(em, sizeof(em), "R%u v=%d", ruleId, valueNow);
+  addEventLogC(EVLOG_RULE, em);
+  setWhy(em);
+}
+
+void evaluateRules() {
+  if (!rulesEnabled) return;
+  unsigned long now = millis();
+  if (now - ruleEvalLastMs < RULE_EVAL_INTERVAL_MS) return;
+  ruleEvalLastMs = now;
+
+  for (uint8_t i = 0; i < MAX_RULES; i++) {
+    SmartRule& r = smartRules[i];
+    if (!r.enabled) continue;
+
+    int16_t v = readRuleSourceValue(r);
+    bool condition = ruleCompare(v, r.op, r.value);
+
+    if (!condition) {
+      r.sinceMs = 0;
+      continue;
+    }
+
+    if (r.sinceMs == 0) r.sinceMs = now;
+    if (r.holdMs > 0 && (now - r.sinceMs) < r.holdMs) continue;
+    if (now - r.lastFireMs < r.cooldownMs) continue;
+
+    r.lastFireMs = now;
+    triggerRuleAction(i, r, v);
+  }
+}
+
+bool parseRuleExpr(String expr, RuleSourceType& srcType, uint8_t& srcIndex, RuleOp& op, int16_t& rhs) {
+  expr.trim();
+  expr.toUpperCase();
+
+  const char* ops[] = {">=", "<=", "==", "!=", ">", "<"};
+  RuleOp opVals[] = {RULE_OP_GE, RULE_OP_LE, RULE_OP_EQ, RULE_OP_NE, RULE_OP_GT, RULE_OP_LT};
+
+  int opPos = -1;
+  uint8_t opSel = 0;
+  for (uint8_t i = 0; i < 6; i++) {
+    opPos = expr.indexOf(ops[i]);
+    if (opPos > 0) {
+      opSel = i;
+      break;
+    }
+  }
+  if (opPos <= 0) return false;
+
+  String lhs = expr.substring(0, opPos);
+  String rhsStr = expr.substring(opPos + strlen(ops[opSel]));
+  lhs.trim();
+  rhsStr.trim();
+
+  if (lhs.startsWith("A")) {
+    int pin = lhs.substring(1).toInt();
+    if (pin < 8 || pin > 15) return false;
+    srcType = RULE_SRC_ANALOG;
+    srcIndex = (uint8_t)(pin - 8);
+  } else if (lhs.startsWith("GPIO")) {
+    int pin = lhs.substring(4).toInt();
+    int8_t idx = -1;
+    for (uint8_t i = 0; i < NUM_GPIO; i++) {
+      if (gpioPins[i] == pin) {
+        idx = i;
+        break;
+      }
+    }
+    if (idx < 0) return false;
+    srcType = RULE_SRC_GPIO;
+    srcIndex = (uint8_t)idx;
+  } else {
+    return false;
+  }
+
+  op = opVals[opSel];
+  rhs = (int16_t)rhsStr.toInt();
+  return true;
+}
+
+void printRule(uint8_t id, const SmartRule& r) {
+  if (!r.enabled) return;
+
+  String opText = "";
+  ruleOpToText(r.op, opText);
+
+  Serial.print(F("R"));
+  Serial.print(id);
+  Serial.print(F(": "));
+  if (r.srcType == RULE_SRC_ANALOG) {
+    Serial.print(F("A"));
+    Serial.print(r.srcIndex + 8);
+  } else {
+    Serial.print(F("GPIO"));
+    Serial.print(gpioPins[r.srcIndex]);
+  }
+  Serial.print(opText);
+  Serial.print(r.value);
+
+  if (r.holdMs > 0) {
+    Serial.print(F(" FOR "));
+    Serial.print(r.holdMs);
+    Serial.print(F("ms"));
+  }
+
+  Serial.print(F(" THEN "));
+  if (r.action == RULE_ACT_MACRO) {
+    Serial.print(F("MACRO "));
+    Serial.print(r.actionArg);
+  } else if (r.action == RULE_ACT_LOG) {
+    Serial.print(F("LOG"));
+  } else {
+    Serial.print(F("ALERT"));
+  }
+
+  Serial.print(F(" CD="));
+  Serial.print(r.cooldownMs);
+  Serial.println(F("ms"));
+}
+
 void handleAddrSend(String hexData) {
   uint8_t payload[FRAME_MAX_PAYLOAD];
   uint8_t count = 0;
@@ -887,7 +1673,14 @@ void handleAddrSend(String hexData) {
 }
 
 void setup() {
+  // Capture/reset cause then disable watchdog to avoid boot loops.
+  bootResetCause = MCUSR;
+  MCUSR = 0;
+  wdt_disable();
+  wdtEnabled = false;
+
   Serial.begin(115200);      // USB/PC
+  serialRxEnableMs = millis() + 250;
 
   // Load configuration from EEPROM if available
   uint8_t savedRotation = 0;
@@ -957,6 +1750,20 @@ void setup() {
     thresholdHooks[i].lastTriggerMs = 0;
   }
 
+  for (uint8_t i = 0; i < MAX_RULES; i++) {
+    smartRules[i].enabled = false;
+    smartRules[i].srcType = RULE_SRC_ANALOG;
+    smartRules[i].srcIndex = 0;
+    smartRules[i].op = RULE_OP_GT;
+    smartRules[i].value = 0;
+    smartRules[i].holdMs = 0;
+    smartRules[i].action = RULE_ACT_LOG;
+    smartRules[i].actionArg = 0;
+    smartRules[i].cooldownMs = 1000;
+    smartRules[i].sinceMs = 0;
+    smartRules[i].lastFireMs = 0;
+  }
+
   // Startup message
   tft.setTextColor(0x07FF);  // Cyan
   tft.setTextSize(2);
@@ -975,6 +1782,8 @@ void setup() {
   Serial.println(F("=== SAM Smart Arduino Monitor ==="));
   Serial.print(F("Firmware: v"));
   Serial.println(F(SAM_FIRMWARE_VERSION));
+  Serial.print(F("ResetCause: "));
+  printResetCause();
   Serial.println(F("Command Console"));
   Serial.print(F("Resolution: "));
   Serial.print(screenW);
@@ -983,6 +1792,7 @@ void setup() {
   Serial.println(F("Type #HELP for commands"));
   Serial.println(F("#SHOWBTNS for touch buttons"));
   Serial.println(F("READY"));
+  setWhy("READY");
 }
 
 void loop() {
@@ -1018,6 +1828,7 @@ void loop() {
       menuManager->handleTouch(px, py);
       delay(200);  // Debounce
     }
+    if (wdtEnabled) wdt_reset();
     return;  // Skip other processing when menu is active
   }
 
@@ -1061,6 +1872,10 @@ void loop() {
     checkThresholds();
   }
 
+  evaluateRules();
+  evaluateEscalation();
+  evaluateFailsafe();
+
   if (cmdReady) {
     processCmd(cmd);
     cmd = "";
@@ -1071,6 +1886,7 @@ void loop() {
   checkFPGASerial(Serial1, 1);
   checkFPGASerial(Serial2, 2);
   checkFPGASerial(Serial3, 3);
+  if (wdtEnabled) wdt_reset();
 }
 
 void checkFPGASerial(HardwareSerial& serial, uint8_t id) {
@@ -1343,10 +2159,30 @@ void checkFPGASerial(HardwareSerial& serial, uint8_t id) {
 
 void serialEvent() {
   while (Serial.available()) {
+    if (millis() < serialRxEnableMs) {
+      (void)Serial.read();
+      cmd = "";
+      continue;
+    }
+
     char c = (char)Serial.read();
-    if (c == '\n') {
-      cmdReady = true;
-    } else if (c != '\r') {
+    if (c == '\n' || c == '\r') {
+      if (cmd.length() > 0) {
+        int hashPos = cmd.indexOf('#');
+        int passPos = cmd.indexOf(">>>");
+        int startPos = -1;
+        if (hashPos >= 0 && passPos >= 0) startPos = min(hashPos, passPos);
+        else if (hashPos >= 0) startPos = hashPos;
+        else if (passPos >= 0) startPos = passPos;
+
+        if (startPos > 0) {
+          cmd = cmd.substring(startPos);
+        } else if (startPos < 0) {
+          cmd = "";
+        }
+      }
+      if (cmd.length() > 0) cmdReady = true;
+    } else {
       if (cmd.length() < 290) {
         cmd += c;
       }
@@ -1529,6 +2365,10 @@ void readFPGAResponse(uint8_t numBytes, uint16_t timeout) {
   if (bytesRead == 0) {
     fpgaTimeouts[activeFpga]++;
     fpgaLastErrorMs[activeFpga] = millis();
+    char em[EVENT_LOG_MSG_LEN];
+    snprintf(em, sizeof(em), "F%u TIMEOUT", activeFpga);
+    addEventLogC(EVLOG_ERR, em);
+    setWhy(em);
     Serial.println(F("TIMEOUT"));
     showTextBottom("FPGA: TIMEOUT");
     return;
@@ -1843,6 +2683,27 @@ void processCmd(String c) {
       Serial.print(watchEnabled ? F("ON " ) : F("OFF "));
       Serial.print(watchSource); Serial.print(F(" @")); Serial.println(watchIntervalMs);
       Serial.print(F("Links: ")); Serial.println(linkIndicatorsEnabled ? F("ON") : F("OFF"));
+      Serial.print(F("Profile: ")); Serial.println(profileName(smartProfile));
+      Serial.print(F("Escalation: ")); Serial.println(escalation.enabled ? F("ON") : F("OFF"));
+      Serial.print(F("Esc Fires: ")); Serial.println(escalation.fireCount);
+      Serial.print(F("Failsafe: "));
+      if (failsafe.enabled) {
+        Serial.print(F("ON "));
+        Serial.println(failsafe.active ? F("(ACTIVE)") : F("(IDLE)"));
+      } else {
+        Serial.println(F("OFF"));
+      }
+      Serial.print(F("Safe Fires: ")); Serial.println(failsafe.fireCount);
+      Serial.print(F("WDT: "));
+      if (wdtEnabled) {
+        Serial.print(F("ON @"));
+        Serial.print(wdtTimeoutMs);
+        Serial.println(F("ms"));
+      } else {
+        Serial.println(F("OFF"));
+      }
+      Serial.print(F("LastReset: "));
+      printResetCause();
       Serial.println(F("============="));
 
     } else if (c.startsWith("#VIEW ")) {
@@ -1970,29 +2831,350 @@ void processCmd(String c) {
         }
       }
 
-    } else if (c.startsWith("#LINKS ") ) {
-      String param = c.substring(7);
+    } else if (c.startsWith("#WDT ")) {
+      String param = c.substring(5);
       param.trim();
+      param.toUpperCase();
       if (param == "?") {
-        Serial.print(F("LINKS="));
-        Serial.println(linkIndicatorsEnabled ? F("ON") : F("OFF"));
+        Serial.print(F("WDT="));
+        if (wdtEnabled) {
+          Serial.print(F("ON "));
+          Serial.println(wdtTimeoutMs);
+        } else {
+          Serial.println(F("OFF"));
+        }
+      } else if (param == "OFF") {
+        setWatchdog(false, 0);
+        Serial.println(F("OK:WDT_OFF"));
+      } else if (param.startsWith("ON ")) {
+        uint16_t ms = (uint16_t)max(15, param.substring(3).toInt());
+        setWatchdog(true, ms);
+        Serial.print(F("OK:WDT_ON "));
+        Serial.println(wdtTimeoutMs);
+      } else {
+        Serial.println(F("ERR:USE_WDT_ON_MS_OFF_?"));
+      }
+
+    } else if (c == "#SUMMARY") {
+      printSmartSummary();
+
+    } else if (c == "#WHY") {
+      Serial.print(F("WHY["));
+      Serial.print(lastWhyMs);
+      Serial.print(F("ms] "));
+      Serial.println(lastWhy);
+
+    } else if (c.startsWith("#PROFILE ")) {
+      String param = c.substring(9);
+      param.trim();
+      param.toUpperCase();
+      if (param == "?" || param == "STATUS") {
+        Serial.print(F("PROFILE="));
+        Serial.println(profileName(smartProfile));
+        Serial.println(F("Profiles: SAFE BALANCED PERF CUSTOM"));
+      } else if (param == "SAFE") {
+        applySmartProfile(PROFILE_SAFE);
+        Serial.println(F("OK:PROFILE_SAFE"));
+      } else if (param == "BALANCED") {
+        applySmartProfile(PROFILE_BALANCED);
+        Serial.println(F("OK:PROFILE_BALANCED"));
+      } else if (param == "PERF") {
+        applySmartProfile(PROFILE_PERF);
+        Serial.println(F("OK:PROFILE_PERF"));
+      } else if (param == "CUSTOM") {
+        smartProfile = PROFILE_CUSTOM;
+        Serial.println(F("OK:PROFILE_CUSTOM"));
+      } else {
+        Serial.println(F("ERR:USE_PROFILE_SAFE_BALANCED_PERF_CUSTOM_?"));
+      }
+
+    } else if (c.startsWith("#LINK ") || c.startsWith("#LINKS ")) {
+      String param = c.startsWith("#LINKS ") ? c.substring(7) : c.substring(6);
+      param.trim();
+      param.toUpperCase();
+      if (param == "?" || param == "STATUS" || param == "REPORT") {
+        printLinkSummary();
       } else if (param == "ON") {
         linkIndicatorsEnabled = true;
-        Serial.println(F("OK:LINKS_ON"));
+        Serial.println(F("OK:LINK_ON"));
       } else if (param == "OFF") {
         linkIndicatorsEnabled = false;
         clearLinkIndicators();
-        Serial.println(F("OK:LINKS_OFF"));
+        Serial.println(F("OK:LINK_OFF"));
       } else {
-        Serial.println(F("ERR:USE_LINKS_ON_OFF_?"));
+        Serial.println(F("ERR:USE_LINK_ON_OFF_?_REPORT"));
+      }
+
+    } else if (c.startsWith("#ESC ")) {
+      String param = c.substring(5);
+      param.trim();
+      if (param == "?" || param == "STATUS") {
+        printEscalationStatus();
+      } else if (param == "ON") {
+        escalation.enabled = true;
+        escalation.lastErrTotal = getTotalLinkErrors();
+        escalation.lastTimeoutTotal = getTotalTimeouts();
+        escalation.lastRuleTotal = ruleFireCount;
+        escalation.lastEvalMs = millis();
+        Serial.println(F("OK:ESC_ON"));
+      } else if (param == "OFF") {
+        escalation.enabled = false;
+        Serial.println(F("OK:ESC_OFF"));
+      } else if (param == "RESET") {
+        escalation.fireCount = 0;
+        escalation.lastFireMs = 0;
+        escalation.lastErrTotal = getTotalLinkErrors();
+        escalation.lastTimeoutTotal = getTotalTimeouts();
+        escalation.lastRuleTotal = ruleFireCount;
+        escalation.lastEvalMs = millis();
+        Serial.println(F("OK:ESC_RESET"));
+      } else if (param.startsWith("SET ")) {
+        // #ESC SET <ERR|TIMEOUT|RULE|ALL> <threshold> <window_ms> <LOG|ALERT|MACRO n>
+        String rest = param.substring(4);
+        int p1 = rest.indexOf(' ');
+        int p2 = (p1 > 0) ? rest.indexOf(' ', p1 + 1) : -1;
+        int p3 = (p2 > 0) ? rest.indexOf(' ', p2 + 1) : -1;
+        if (p1 < 0 || p2 < 0 || p3 < 0) {
+          Serial.println(F("ERR:FORMAT #ESC SET <ERR|TIMEOUT|RULE|ALL> <threshold> <window_ms> <LOG|ALERT|MACRO n>"));
+        } else {
+          String metric = rest.substring(0, p1);
+          String thresholdStr = rest.substring(p1 + 1, p2);
+          String windowStr = rest.substring(p2 + 1, p3);
+          String actionStr = rest.substring(p3 + 1);
+          metric.toUpperCase();
+          actionStr.trim();
+
+          uint8_t mask = 0;
+          if (metric == "ERR") mask = ESC_METRIC_ERR;
+          else if (metric == "TIMEOUT") mask = ESC_METRIC_TIMEOUT;
+          else if (metric == "RULE") mask = ESC_METRIC_RULE;
+          else if (metric == "ALL") mask = (uint8_t)(ESC_METRIC_ERR | ESC_METRIC_TIMEOUT | ESC_METRIC_RULE);
+
+          uint16_t threshold = (uint16_t)max(1, thresholdStr.toInt());
+          uint16_t windowMs = (uint16_t)max(200, windowStr.toInt());
+          RuleActionType action;
+          uint8_t actionArg = 0;
+          if (mask == 0 || !parseEscAction(actionStr, action, actionArg)) {
+            Serial.println(F("ERR:ESC_SET_ARGS"));
+          } else {
+            escalation.metricMask = mask;
+            escalation.threshold = threshold;
+            escalation.windowMs = windowMs;
+            escalation.action = action;
+            escalation.actionArg = actionArg;
+            escalation.lastErrTotal = getTotalLinkErrors();
+            escalation.lastTimeoutTotal = getTotalTimeouts();
+            escalation.lastRuleTotal = ruleFireCount;
+            escalation.lastEvalMs = millis();
+            Serial.println(F("OK:ESC_SET"));
+          }
+        }
+      } else {
+        Serial.println(F("ERR:ESC_CMD"));
+      }
+
+    } else if (c.startsWith("#SAFE ")) {
+      String param = c.substring(6);
+      param.trim();
+      if (param == "?" || param == "STATUS") {
+        printFailsafeStatus();
+      } else if (param == "ON") {
+        failsafe.enabled = true;
+        failsafe.lastErrTotal = getTotalLinkErrors();
+        failsafe.lastTimeoutTotal = getTotalTimeouts();
+        failsafe.lastEscTotal = escalation.fireCount;
+        failsafe.lastEvalMs = millis();
+        Serial.println(F("OK:SAFE_ON"));
+      } else if (param == "OFF") {
+        if (failsafe.active) exitFailsafe();
+        failsafe.enabled = false;
+        Serial.println(F("OK:SAFE_OFF"));
+      } else if (param == "CLEAR") {
+        if (failsafe.active) exitFailsafe();
+        failsafe.fireCount = 0;
+        failsafe.lastErrTotal = getTotalLinkErrors();
+        failsafe.lastTimeoutTotal = getTotalTimeouts();
+        failsafe.lastEscTotal = escalation.fireCount;
+        failsafe.lastEvalMs = millis();
+        Serial.println(F("OK:SAFE_CLEAR"));
+      } else if (param.startsWith("SET ")) {
+        // #SAFE SET <threshold> <window_ms> <hold_ms>
+        String rest = param.substring(4);
+        int p1 = rest.indexOf(' ');
+        int p2 = (p1 > 0) ? rest.indexOf(' ', p1 + 1) : -1;
+        if (p1 < 0 || p2 < 0) {
+          Serial.println(F("ERR:FORMAT #SAFE SET <threshold> <window_ms> <hold_ms>"));
+        } else {
+          uint16_t th = (uint16_t)max(1, rest.substring(0, p1).toInt());
+          uint16_t win = (uint16_t)max(200, rest.substring(p1 + 1, p2).toInt());
+          uint16_t hold = (uint16_t)max(500, rest.substring(p2 + 1).toInt());
+          failsafe.threshold = th;
+          failsafe.windowMs = win;
+          failsafe.holdMs = hold;
+          failsafe.lastErrTotal = getTotalLinkErrors();
+          failsafe.lastTimeoutTotal = getTotalTimeouts();
+          failsafe.lastEscTotal = escalation.fireCount;
+          failsafe.lastEvalMs = millis();
+          Serial.println(F("OK:SAFE_SET"));
+        }
+      } else {
+        Serial.println(F("ERR:SAFE_CMD"));
+      }
+
+
+    } else if (c.startsWith("#RULE ")) {
+      // #RULE ON|OFF|?|LIST|CLEAR <id|ALL>|ADD <expr> [FOR <ms>] THEN <action>
+      String param = c.substring(6);
+      param.trim();
+
+      if (param == "?") {
+        uint8_t count = 0;
+        for (uint8_t i = 0; i < MAX_RULES; i++) if (smartRules[i].enabled) count++;
+        Serial.print(F("RULES="));
+        Serial.println(rulesEnabled ? F("ON") : F("OFF"));
+        Serial.print(F("RULE_COUNT="));
+        Serial.println(count);
+        Serial.print(F("RULE_FIRES="));
+        Serial.println(ruleFireCount);
+      } else if (param == "ON") {
+        rulesEnabled = true;
+        Serial.println(F("OK:RULES_ON"));
+      } else if (param == "OFF") {
+        rulesEnabled = false;
+        Serial.println(F("OK:RULES_OFF"));
+      } else if (param == "LIST") {
+        Serial.println(F("=== RULES ==="));
+        bool any = false;
+        for (uint8_t i = 0; i < MAX_RULES; i++) {
+          if (smartRules[i].enabled) {
+            any = true;
+            printRule(i, smartRules[i]);
+          }
+        }
+        if (!any) Serial.println(F("(none)"));
+      } else if (param.startsWith("CLEAR ")) {
+        String arg = param.substring(6);
+        arg.trim();
+        if (arg == "ALL") {
+          for (uint8_t i = 0; i < MAX_RULES; i++) smartRules[i].enabled = false;
+          Serial.println(F("OK:RULE_CLEAR_ALL"));
+        } else {
+          int id = arg.toInt();
+          if (id >= 0 && id < MAX_RULES) {
+            smartRules[id].enabled = false;
+            Serial.print(F("OK:RULE_CLEAR_"));
+            Serial.println(id);
+          } else {
+            Serial.print(F("ERR:RULE_ID_0_TO_"));
+            Serial.println(MAX_RULES - 1);
+          }
+        }
+      } else if (param.startsWith("ADD ")) {
+        String body = param.substring(4);
+        body.trim();
+
+        int thenPos = body.indexOf(" THEN ");
+        if (thenPos <= 0) {
+          Serial.println(F("ERR:FORMAT #RULE ADD <expr> [FOR <ms>] THEN <MACRO id|LOG|ALERT>"));
+        } else {
+          String left = body.substring(0, thenPos);
+          String actionStr = body.substring(thenPos + 6);
+          left.trim();
+          actionStr.trim();
+
+          uint16_t holdMs = 0;
+          int forPos = left.indexOf(" FOR ");
+          if (forPos > 0) {
+            holdMs = (uint16_t)max(0, left.substring(forPos + 5).toInt());
+            left = left.substring(0, forPos);
+            left.trim();
+          }
+
+          RuleSourceType srcType;
+          uint8_t srcIndex = 0;
+          RuleOp op;
+          int16_t rhs = 0;
+          if (!parseRuleExpr(left, srcType, srcIndex, op, rhs)) {
+            Serial.println(F("ERR:RULE_EXPR"));
+            Serial.println(F("  Use A8..A15 or GPIO22..GPIO29 with > < >= <= == !="));
+          } else {
+            RuleActionType action = RULE_ACT_LOG;
+            uint8_t actionArg = 0;
+            String actionUp = actionStr;
+            actionUp.toUpperCase();
+
+            if (actionUp.startsWith("MACRO ")) {
+              int id = actionUp.substring(6).toInt();
+              if (id < 0 || id >= MAX_MACROS) {
+                Serial.print(F("ERR:MACRO_ID_0_TO_"));
+                Serial.println(MAX_MACROS - 1);
+                return;
+              }
+              action = RULE_ACT_MACRO;
+              actionArg = (uint8_t)id;
+            } else if (actionUp == "LOG") {
+              action = RULE_ACT_LOG;
+            } else if (actionUp == "ALERT") {
+              action = RULE_ACT_ALERT;
+            } else {
+              Serial.println(F("ERR:RULE_ACTION"));
+              Serial.println(F("  Actions: MACRO <id>, LOG, ALERT"));
+              return;
+            }
+
+            int slot = -1;
+            for (uint8_t i = 0; i < MAX_RULES; i++) {
+              if (!smartRules[i].enabled) {
+                slot = i;
+                break;
+              }
+            }
+            if (slot < 0) {
+              Serial.println(F("ERR:RULE_SLOTS_FULL"));
+            } else {
+              SmartRule& r = smartRules[slot];
+              r.enabled = true;
+              r.srcType = srcType;
+              r.srcIndex = srcIndex;
+              r.op = op;
+              r.value = rhs;
+              r.holdMs = holdMs;
+              r.action = action;
+              r.actionArg = actionArg;
+              r.cooldownMs = 1000;
+              r.sinceMs = 0;
+              r.lastFireMs = 0;
+
+              Serial.print(F("OK:RULE_ADD_"));
+              Serial.println(slot);
+              printRule((uint8_t)slot, r);
+            }
+          }
+        }
+      } else {
+        Serial.println(F("ERR:RULE_CMD"));
       }
 
     } else if (c == "#HEALTH") {
       Serial.println(F("=== HEALTH ==="));
       Serial.print(F("Uptime(ms): ")); Serial.println(millis());
       Serial.print(F("FreeRAM: ")); Serial.println(getFreeRAM());
+      Serial.print(F("WDT: "));
+      if (wdtEnabled) {
+        Serial.print(F("ON @"));
+        Serial.print(wdtTimeoutMs);
+        Serial.println(F("ms"));
+      } else {
+        Serial.println(F("OFF"));
+      }
+      Serial.print(F("LastReset: "));
+      printResetCause();
       Serial.print(F("GPIO Events: ")); Serial.println(gpioEventCount);
       Serial.print(F("Threshold Events: ")); Serial.println(thresholdEventCount);
+      Serial.print(F("Rule Fires: ")); Serial.println(ruleFireCount);
+      Serial.print(F("Escalations: ")); Serial.println(escalation.fireCount);
+      Serial.print(F("Failsafe Fires: ")); Serial.println(failsafe.fireCount);
+      Serial.print(F("Failsafe Active: ")); Serial.println(failsafe.active ? F("YES") : F("NO"));
       Serial.print(F("Addr Local/Pass: ")); Serial.print(addrLocalHandled); Serial.print(F("/")); Serial.println(addrPassthrough);
       for (uint8_t id = 1; id <= 3; id++) {
         Serial.print(F("F")); Serial.print(id);
@@ -2014,6 +3196,21 @@ void processCmd(String c) {
       thresholdEventCount = 0;
       addrLocalHandled = 0;
       addrPassthrough = 0;
+      ruleFireCount = 0;
+      escalation.fireCount = 0;
+      escalation.lastFireMs = 0;
+      escalation.lastErrTotal = getTotalLinkErrors();
+      escalation.lastTimeoutTotal = getTotalTimeouts();
+      escalation.lastRuleTotal = 0;
+      escalation.lastEvalMs = millis();
+      if (failsafe.active) exitFailsafe();
+      failsafe.fireCount = 0;
+      failsafe.lastErrTotal = getTotalLinkErrors();
+      failsafe.lastTimeoutTotal = getTotalTimeouts();
+      failsafe.lastEscTotal = escalation.fireCount;
+      failsafe.lastEvalMs = millis();
+      eventLogCount = 0;
+      eventLogHead = 0;
       Serial.println(F("OK:HEALTHRESET"));
 
     } else if (c.startsWith("#FPGASEL")) {
@@ -2439,6 +3636,41 @@ void processCmd(String c) {
     } else if (c.startsWith("#XYPLOT ")) {
       handleXYPlot(c.substring(8));
 
+    } else if (c.startsWith("#LOG ")) {
+      // Runtime event log: #LOG ? | #LOG CLEAR | #LOG LAST <n> [TYPE]
+      String p = c.substring(5);
+      p.trim();
+      if (p == "?" || p == "STATUS") {
+        Serial.print(F("EVLOG_COUNT=")); Serial.println(eventLogCount);
+        Serial.print(F("EVLOG_CAP=")); Serial.println(EVENT_LOG_CAPACITY);
+      } else if (p == "CLEAR") {
+        eventLogCount = 0;
+        eventLogHead = 0;
+        Serial.println(F("OK:EVLOG_CLEAR"));
+      } else if (p.startsWith("LAST ")) {
+        String rest = p.substring(5);
+        rest.trim();
+        int sp = rest.indexOf(' ');
+        String nStr = (sp > 0) ? rest.substring(0, sp) : rest;
+        String typeStr = (sp > 0) ? rest.substring(sp + 1) : "ALL";
+
+        int n = nStr.toInt();
+        if (n <= 0) n = 10;
+        if (n > EVENT_LOG_CAPACITY) n = EVENT_LOG_CAPACITY;
+
+        int8_t ft = parseEventTypeFilter(typeStr);
+        if (ft == -2) {
+          Serial.println(F("ERR:LOG_TYPE"));
+          Serial.println(F("  Types: ALL RULE GPIO THR ERR INFO"));
+        } else {
+          Serial.println(F("=== EVENT LOG ==="));
+          printEventLogLast((uint8_t)n, ft);
+        }
+      } else {
+        Serial.println(F("ERR:LOG_CMD"));
+        Serial.println(F("  #LOG ? | #LOG CLEAR | #LOG LAST <n> [TYPE]"));
+      }
+
     } else if (c.startsWith("#LOGSTART ")) {
       handleLogStart(c.substring(10));
 
@@ -2853,12 +4085,14 @@ void processCmd(String c) {
       }
 
     } else if (c == "#GPIOREG") {
-      // Show GPIO register (all pin states as 8-bit value)
+      // Show GPIO register (all pin states as 24-bit value)
       showGPIORegister();
 
     } else if (c.startsWith("#GPIOSET ")) {
-      // #GPIOSET <0-255> - Set all 8 pins at once
-      uint8_t regVal = c.substring(9).toInt();
+      // #GPIOSET <0x000000-0xFFFFFF or dec> - Set all 24 GPIO bits
+      String regStr = c.substring(9);
+      regStr.trim();
+      uint32_t regVal = (uint32_t)strtoul(regStr.c_str(), NULL, 0);
       setGPIORegister(regVal);
 
     } else {
@@ -3052,7 +4286,19 @@ void help() {
   Serial.println(F("  #BRIDGE <ON|OFF|?>"));
   Serial.println(F("  #WATCH START <A8..A15|GPIO> <ms>"));
   Serial.println(F("  #WATCH STOP | #WATCH ?"));
-  Serial.println(F("  #LINKS <ON|OFF|?>"));
+  Serial.println(F("  #WDT <ON ms|OFF|?>"));
+  Serial.println(F("  #LINK <ON|OFF|?|REPORT>"));
+  Serial.println(F("  #LINKS <ON|OFF|?> (alias)"));
+  Serial.println(F("  #PROFILE <SAFE|BALANCED|PERF|CUSTOM|?>"));
+  Serial.println(F("  #SUMMARY"));
+  Serial.println(F("  #WHY"));
+  Serial.println(F("  #ESC <ON|OFF|?|RESET>"));
+  Serial.println(F("  #ESC SET <ERR|TIMEOUT|RULE|ALL> <threshold> <window_ms> <LOG|ALERT|MACRO n>"));
+  Serial.println(F("  #SAFE <ON|OFF|?|CLEAR>"));
+  Serial.println(F("  #SAFE SET <threshold> <window_ms> <hold_ms>"));
+  Serial.println(F("  #RULE ?|ON|OFF|LIST"));
+  Serial.println(F("  #RULE ADD <expr> [FOR <ms>] THEN <MACRO id|LOG|ALERT>"));
+  Serial.println(F("  #RULE CLEAR <id|ALL>"));
   Serial.println(F("  #HEALTH | #HEALTHRESET"));
   Serial.println(F("  #FPGAREAD <bytes> [timeout]"));
   Serial.println(F("    Read N bytes from FPGA"));
@@ -3096,7 +4342,7 @@ void help() {
   Serial.println(F("    Shows raw & mapped coordinates"));
   Serial.println(F("  Touch top-right corner to toggle SPLIT/FULL"));
   Serial.println();
-  Serial.println(F("GPIO (Pins 22-29):"));
+  Serial.println(F("GPIO (Pins 22-45):"));
   Serial.println(F("  #GPIOMODE <pin> <IN|INPU|OUT>"));
   Serial.println(F("  #GPIOWRITE <pin> <0|1>"));
   Serial.println(F("  #GPIOREAD <pin>"));
@@ -3105,8 +4351,8 @@ void help() {
   Serial.println(F("  #HOOK GPIO <pin> <RISE|FALL|BOTH|NONE> <macro> [cooldown]"));
   Serial.println(F("  #HOOK THR <0-7> <ENTER|EXIT|BOTH|NONE> <macro> [cooldown]"));
   Serial.println(F("  #HOOK LIST"));
-  Serial.println(F("  #GPIOREG - Show 8-bit register"));
-  Serial.println(F("  #GPIOSET <0-255> - Set register"));
+  Serial.println(F("  #GPIOREG - Show 24-bit register"));
+  Serial.println(F("  #GPIOSET <0x000000-0xFFFFFF> - Set register"));
   Serial.println();
   Serial.println(F("I2C (SDA=20, SCL=21):"));
   Serial.println(F("  #I2CSCAN - Scan for I2C devices"));
@@ -3154,6 +4400,10 @@ void help() {
   Serial.println(F("    source: 0-7=A8-A15, 15=GPIO"));
   Serial.println(F("  #LOGZONE <start> <end> - Set zone"));
   Serial.println(F("  #LOGZONE? - Query log zone"));
+  Serial.println(F("EVENT LOG (RAM):"));
+  Serial.println(F("  #LOG ? - Event log status"));
+  Serial.println(F("  #LOG LAST <n> [ALL|RULE|GPIO|THR|ERR|INFO]"));
+  Serial.println(F("  #LOG CLEAR - Clear event log"));
   Serial.println();
   Serial.println(F("WAVEFORM GENERATOR (PWM):"));
   Serial.println(F("  #WAVEGEN <pin> <type> <freq>"));
@@ -3616,13 +4866,40 @@ void handleEEPROMClear() {
 }
 
 // Helper function to parse hex (0x prefix) or decimal numbers
-int parseHexOrDec(String str) {
+long parseHexOrDec(String str) {
   str.trim();
   if (str.startsWith("0x") || str.startsWith("0X")) {
     return strtol(str.c_str() + 2, NULL, 16);
   } else {
     return str.toInt();
   }
+}
+
+bool pwmPinActive[47] = {false};
+
+bool isPwmCapablePin(uint8_t pin) {
+  return ((pin >= 2 && pin <= 13) || (pin >= 44 && pin <= 46));
+}
+
+int8_t findGPIOIndex(uint8_t pin) {
+  for (uint8_t i = 0; i < NUM_GPIO; i++) {
+    if (gpioPins[i] == pin) return (int8_t)i;
+  }
+  return -1;
+}
+
+bool isPinBusyByPWM(uint8_t pin) {
+  if (waveActive && wavePin == (int8_t)pin) return true;
+  if (pin < 47 && pwmPinActive[pin]) return true;
+  return false;
+}
+
+bool isPinBusyByGPIO(uint8_t pin) {
+  int8_t idx = findGPIOIndex(pin);
+  if (idx < 0) return false;
+  if (gpioModes[idx] == GPIO_OUTPUT) return true;
+  if (gpioEventEnable[idx]) return true;
+  return false;
 }
 
 // ========== ANALOG INPUT FUNCTIONS ==========
@@ -4145,7 +5422,7 @@ void initGPIO() {
     gpioEventRising[i] = false;
     gpioEventFalling[i] = false;
   }
-  Serial.println(F("GPIO: Pins 22-29 initialized"));
+  Serial.println(F("GPIO: Pins 22-45 initialized"));
 }
 
 // Poll GPIO pins for changes (called in loop)
@@ -4204,6 +5481,8 @@ void processGPIOEvents() {
     Serial.print(F("] "));
     Serial.println(evt.rising ? F("RISING") : F("FALLING"));
 
+    addEventLog(EVLOG_GPIO, msg);
+    setWhy(msg.c_str());
     gpioEventCount++;
     triggerGPIOHook(evt.pin, evt.rising);
 
@@ -4213,17 +5492,13 @@ void processGPIOEvents() {
 
 // Set GPIO mode
 void setGPIOMode(uint8_t pin, String& mode) {
-  // Find GPIO index
-  int8_t idx = -1;
-  for (uint8_t i = 0; i < NUM_GPIO; i++) {
-    if (gpioPins[i] == pin) {
-      idx = i;
-      break;
-    }
-  }
-
+  int8_t idx = findGPIOIndex(pin);
   if (idx < 0) {
-    Serial.println(F("ERR:PIN_22_29_ONLY"));
+    Serial.println(F("ERR:PIN_22_45_ONLY"));
+    return;
+  }
+  if (isPinBusyByPWM(pin)) {
+    Serial.println(F("ERR:PIN_BUSY_PWM"));
     return;
   }
 
@@ -4258,17 +5533,13 @@ void setGPIOMode(uint8_t pin, String& mode) {
 
 // Write GPIO output
 void writeGPIO(uint8_t pin, String& val) {
-  // Find GPIO index
-  int8_t idx = -1;
-  for (uint8_t i = 0; i < NUM_GPIO; i++) {
-    if (gpioPins[i] == pin) {
-      idx = i;
-      break;
-    }
-  }
-
+  int8_t idx = findGPIOIndex(pin);
   if (idx < 0) {
-    Serial.println(F("ERR:PIN_22_29_ONLY"));
+    Serial.println(F("ERR:PIN_22_45_ONLY"));
+    return;
+  }
+  if (isPinBusyByPWM(pin)) {
+    Serial.println(F("ERR:PIN_BUSY_PWM"));
     return;
   }
 
@@ -4298,17 +5569,9 @@ void writeGPIO(uint8_t pin, String& val) {
 
 // Read GPIO input
 void readGPIO(uint8_t pin) {
-  // Find GPIO index
-  int8_t idx = -1;
-  for (uint8_t i = 0; i < NUM_GPIO; i++) {
-    if (gpioPins[i] == pin) {
-      idx = i;
-      break;
-    }
-  }
-
+  int8_t idx = findGPIOIndex(pin);
   if (idx < 0) {
-    Serial.println(F("ERR:PIN_22_29_ONLY"));
+    Serial.println(F("ERR:PIN_22_45_ONLY"));
     return;
   }
 
@@ -4337,17 +5600,13 @@ void readAllGPIO() {
 
 // Set GPIO event configuration
 void setGPIOEvent(uint8_t pin, String& type) {
-  // Find GPIO index
-  int8_t idx = -1;
-  for (uint8_t i = 0; i < NUM_GPIO; i++) {
-    if (gpioPins[i] == pin) {
-      idx = i;
-      break;
-    }
-  }
-
+  int8_t idx = findGPIOIndex(pin);
   if (idx < 0) {
-    Serial.println(F("ERR:PIN_22_29_ONLY"));
+    Serial.println(F("ERR:PIN_22_45_ONLY"));
+    return;
+  }
+  if (isPinBusyByPWM(pin)) {
+    Serial.println(F("ERR:PIN_BUSY_PWM"));
     return;
   }
 
@@ -4385,40 +5644,45 @@ void setGPIOEvent(uint8_t pin, String& type) {
   }
 }
 
-// Show GPIO register (8 pins as 8-bit value)
+// Show GPIO register (24 pins as 24-bit value)
 void showGPIORegister() {
-  uint8_t regVal = 0;
+  uint32_t regVal = 0;
   for (uint8_t i = 0; i < NUM_GPIO; i++) {
     if (gpioStates[i]) {
-      regVal |= (1 << i);
+      regVal |= (1UL << i);
     }
   }
 
+  char hx[9];
+  snprintf(hx, sizeof(hx), "%06lX", regVal & 0xFFFFFFUL);
   Serial.print(F("GPIOREG=0x"));
-  if (regVal < 16) Serial.print(F("0"));
-  Serial.print(regVal, HEX);
+  Serial.print(hx);
   Serial.print(F(" ("));
-  Serial.print(regVal);
+  Serial.print(regVal & 0xFFFFFFUL);
   Serial.print(F(") BIN="));
-  for (int i = 7; i >= 0; i--) {
+  for (int i = NUM_GPIO - 1; i >= 0; i--) {
     Serial.print((regVal >> i) & 1);
   }
   Serial.println();
 }
 
-// Set GPIO register (8 pins at once, outputs only)
-void setGPIORegister(uint8_t regVal) {
+// Set GPIO register (24 pins at once, outputs only)
+void setGPIORegister(uint32_t regVal) {
+  regVal &= 0xFFFFFFUL;
   for (uint8_t i = 0; i < NUM_GPIO; i++) {
+    uint8_t pin = gpioPins[i];
     if (gpioModes[i] == GPIO_OUTPUT) {
+      if (isPinBusyByPWM(pin)) continue;
       uint8_t bitVal = (regVal >> i) & 1;
-      digitalWrite(gpioPins[i], bitVal);
+      digitalWrite(pin, bitVal);
       gpioStates[i] = bitVal;
     }
   }
 
+  char hx[9];
+  snprintf(hx, sizeof(hx), "%06lX", regVal);
   Serial.print(F("OK:GPIOSET=0x"));
-  if (regVal < 16) Serial.print(F("0"));
-  Serial.println(regVal, HEX);
+  Serial.println(hx);
 }
 
 // ========== DISPLAY WIDGET FUNCTIONS ==========
@@ -4844,15 +6108,16 @@ void updateDataLogger() {
       // Analog pin A8-A15
       value = analogRead(analogPins[logSource]);
     } else if (logSource == 15) {
-      // GPIO register
-      value = 0;
+      // GPIO register (stored as lower 16 bits for EEPROM log entry)
+      uint32_t regVal = 0;
       for (uint8_t i = 0; i < NUM_GPIO; i++) {
         if (gpioModes[i] != GPIO_OUTPUT) {
-          value |= (digitalRead(gpioPins[i]) << i);
+          if (digitalRead(gpioPins[i])) regVal |= (1UL << i);
         } else {
-          value |= (gpioStates[i] << i);
+          if (gpioStates[i]) regVal |= (1UL << i);
         }
       }
+      value = (uint16_t)(regVal & 0xFFFF);
     }
 
     // Write log entry to EEPROM
@@ -5572,10 +6837,23 @@ void handleWaveGen(String params) {
   if (waveFreq > 10000) waveFreq = 10000;
 
   // Check if pin supports PWM (Mega PWM pins: 2-13, 44-46)
-  if (!((pin >= 2 && pin <= 13) || (pin >= 44 && pin <= 46))) {
+  if (!isPwmCapablePin(pin)) {
     Serial.println(F("ERR:PIN_NO_PWM"));
     Serial.println(F("PWM pins: 2-13, 44-46"));
     return;
+  }
+
+  if (isPinBusyByGPIO((uint8_t)pin)) {
+    Serial.println(F("ERR:PIN_BUSY_GPIO"));
+    return;
+  }
+  if ((uint8_t)pin < 47 && pwmPinActive[(uint8_t)pin]) {
+    Serial.println(F("ERR:PIN_BUSY_PWM"));
+    return;
+  }
+
+  if (waveActive && wavePin >= 0 && wavePin != pin) {
+    analogWrite(wavePin, 0);
   }
 
   wavePin = pin;
@@ -5636,9 +6914,18 @@ void handlePWMSet(String params) {
   int duty = vals[1];
 
   // Check if pin supports PWM (Mega PWM pins: 2-13, 44-46)
-  if (!((pin >= 2 && pin <= 13) || (pin >= 44 && pin <= 46))) {
+  if (!isPwmCapablePin(pin)) {
     Serial.println(F("ERR:PIN_NO_PWM"));
     Serial.println(F("PWM pins: 2-13, 44-46"));
+    return;
+  }
+
+  if (isPinBusyByGPIO((uint8_t)pin)) {
+    Serial.println(F("ERR:PIN_BUSY_GPIO"));
+    return;
+  }
+  if (waveActive && wavePin == pin) {
+    Serial.println(F("ERR:PIN_BUSY_PWM"));
     return;
   }
 
@@ -5648,6 +6935,7 @@ void handlePWMSet(String params) {
 
   pinMode(pin, OUTPUT);
   analogWrite(pin, duty);
+  if (pin >= 0 && pin < 47) pwmPinActive[pin] = (duty > 0);
 
   Serial.print(F("PWM_SET: Pin="));
   Serial.print(pin);
@@ -5662,13 +6950,14 @@ void handlePWMStop(String params) {
   int pin = params.toInt();
 
   // Check if pin supports PWM
-  if (!((pin >= 2 && pin <= 13) || (pin >= 44 && pin <= 46))) {
+  if (!isPwmCapablePin(pin)) {
     Serial.println(F("ERR:PIN_NO_PWM"));
     Serial.println(F("PWM pins: 2-13, 44-46"));
     return;
   }
 
   analogWrite(pin, 0);
+  if (pin >= 0 && pin < 47) pwmPinActive[pin] = false;
   Serial.print(F("PWM_STOPPED: Pin="));
   Serial.println(pin);
 }
@@ -5700,7 +6989,7 @@ void handlePWMFreq(String params) {
   unsigned long freq = vals[1];
 
   // Check if pin supports PWM
-  if (!((pin >= 2 && pin <= 13) || (pin >= 44 && pin <= 46))) {
+  if (!isPwmCapablePin(pin)) {
     Serial.println(F("ERR:PIN_NO_PWM"));
     return;
   }
@@ -6175,6 +7464,10 @@ void checkThresholds() {
         thresholds[i].alertState = true;
         thresholdEventCount++;
         triggerThresholdHook(i, true);
+        char em[EVENT_LOG_MSG_LEN];
+        snprintf(em, sizeof(em), "A%u ENTER %u", i + 8, val);
+        addEventLogC(EVLOG_THR, em);
+        setWhy(em);
 
         Serial.print(F("ALERT: A"));
         Serial.print(i + 8);
@@ -6203,6 +7496,10 @@ void checkThresholds() {
         thresholds[i].alertState = false;
         thresholdEventCount++;
         triggerThresholdHook(i, false);
+        char em[EVENT_LOG_MSG_LEN];
+        snprintf(em, sizeof(em), "A%u EXIT %u", i + 8, val);
+        addEventLogC(EVLOG_THR, em);
+        setWhy(em);
 
         Serial.print(F("CLEAR: A"));
         Serial.print(i + 8);

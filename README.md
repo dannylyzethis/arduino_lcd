@@ -8,7 +8,7 @@ SAM (Smart Arduino Monitor) is the Mega firmware in this repository: a split/ful
 
 ## Branch Scope
 
-- Branch: `codex/mega-foundation-features`
+- Branch: `codex/sam-smart-features`
 - Primary MCU: **Arduino Mega 2560**
 - Primary display: **ILI9486/ILI9488 320x480** using `MCUFRIEND_kbv`
 - Legacy path also exists: `ili9341_serial_display/` (older Uno/ILI9341 workflow)
@@ -27,6 +27,12 @@ SAM (Smart Arduino Monitor) is the Mega firmware in this repository: a split/ful
 - Optional serial bridge/sniffer output (`#BRIDGE`) with channel/timestamp tags
 - Watch mode + health telemetry (`#WATCH`, `#HEALTH`, `#HEALTHRESET`)
 - Event hook automation to macros for GPIO and threshold transitions (`#HOOK ...`)
+- Smart diagnostics and resilience features:
+  - profile/summary/links (`#PROFILE`, `#SUMMARY`, `#LINK`)
+  - escalation engine (`#ESC ...`)
+  - failsafe auto-recovery (`#SAFE ...`)
+  - last-trigger reason (`#WHY`)
+  - hardware watchdog (`#WDT ...`)
 - Split/fullscreen runtime view toggle (`#VIEW ...` + top-right touch corner)
 - Includes onboard utility subsystems:
   - GPIO monitor/control
@@ -71,7 +77,7 @@ SAM (Smart Arduino Monitor) is the Mega firmware in this repository: a split/ful
 
 ### Extended I/O
 
-- GPIO control block: pins `22-29`
+- GPIO control block: pins `22-45` (24 GPIO)
 - Analog block: `A8-A15`
 
 ## Prerequisites
@@ -88,8 +94,8 @@ Run from repo root:
 arduino-cli core update-index
 arduino-cli core install arduino:avr
 
-arduino-cli compile --fqbn arduino:avr:mega --libraries ".\\Libraries" ".\\mega_ili9486_serial_display"
-arduino-cli upload -p COM3 --fqbn arduino:avr:mega ".\\mega_ili9486_serial_display"
+arduino-cli compile --fqbn arduino:avr:mega --libraries ".\\Libraries" ".\\_compile_stage_mega"
+arduino-cli upload -p COM3 --fqbn arduino:avr:mega ".\\_compile_stage_mega"
 ```
 
 Tips:
@@ -97,6 +103,9 @@ Tips:
 - Replace `COM3` with your actual board port.
 - Use `arduino-cli board list` to discover the port.
 - If upload fails because serial port is busy, close Serial Monitor/terminal first.
+- Staging note: `arduino-cli` expects sketch file/folder names to match. This repo keeps
+  `mega_ili9486_split_text.ino` in `mega_ili9486_serial_display/`, so use a temporary staged
+  folder (for example `_compile_stage_mega`) with the file copied/renamed to `_compile_stage_mega.ino`.
 
 ## First Boot Checklist
 
@@ -176,7 +185,19 @@ Commands are line-based text over USB serial.
 - `#GPIOREADALL`
 - `#GPIOEVENT <pin> <NONE|RISING|FALLING|BOTH>`
 - `#GPIOREG`
-- `#GPIOSET <0-255>`
+- `#GPIOSET <0x000000-0xFFFFFF>`
+
+### Smart Ops
+
+- `#PROFILE <SAFE|BALANCED|PERF|CUSTOM|?>`
+- `#SUMMARY`
+- `#WHY`
+- `#LINK <ON|OFF|?|REPORT>` (`#LINKS` alias)
+- `#ESC <ON|OFF|?|RESET>`
+- `#ESC SET <ERR|TIMEOUT|RULE|ALL> <threshold> <window_ms> <LOG|ALERT|MACRO n>`
+- `#SAFE <ON|OFF|?|CLEAR>`
+- `#SAFE SET <threshold> <window_ms> <hold_ms>`
+- `#WDT <ON ms|OFF|?>`
 
 ### I2C
 
@@ -277,15 +298,21 @@ The files in `ili9341_serial_display/` are retained for older workflows and are 
 
 For this branch, use this `README.md` + runtime `#HELP` output as primary reference.
 
-## Branch Feature Status (Mega Foundation)
+## Branch Feature Status (SAM Smart Features)
 
-Implemented on `codex/mega-foundation-features`:
+Implemented on `codex/sam-smart-features`:
 
 - Protocol foundation toggles and status wiring (`#ADDRMODE`, `#ADDR`, `#ADDRSEND`, `#FRAME`, `#BRIDGE`)
 - Serial watch mode and health/counter reporting (`#WATCH`, `#HEALTH`, `#HEALTHRESET`)
 - GPIO/threshold event hooks with macro guard (`#HOOK GPIO`, `#HOOK THR`, recursion depth limit)
 - View mode persistence and runtime toggles (`#VIEW`, touch top-right quick toggle)
 - Framing-aware touch button TX path
+- Rule/event intelligence + event ring log (`#RULE`, `#LOG`)
+- 24 GPIO expansion with PWM conflict guards (`ERR:PIN_BUSY_PWM` / `ERR:PIN_BUSY_GPIO`)
+- Watchdog control and reset diagnostics (`#WDT`, status/health reset cause)
+- Failsafe auto-recovery (`#SAFE`)
+- Last-trigger explainability (`#WHY`)
+- Serial parser hardening for noisy prefixes/first-command reliability
 
 Compatibility notes:
 
@@ -296,13 +323,13 @@ Compatibility notes:
 
 Validated via `arduino-cli compile` on March 14, 2026 (temp staging sketch rename only):
 
-- Flash: `127,364 / 253,952` bytes (`50%`)
-- RAM: `5,256 / 8,192` bytes (`64%`)
-- Estimated free RAM for locals/stack: `2,936` bytes
+- Flash: `143,846 / 253,952` bytes (`56%`)
+- RAM: `6,408 / 8,192` bytes (`78%`)
+- Estimated free RAM for locals/stack: `1,784` bytes
 
 
 ## Firmware Versioning
 
 - Product name: `SAM (Smart Arduino Monitor)`
 - Runtime query command: `#VERSION`
-- Current firmware constant: `SAM_FIRMWARE_VERSION = 1.1.0`
+- Current firmware constant: `SAM_FIRMWARE_VERSION = 1.2.0`
