@@ -481,6 +481,25 @@ struct EscalationPolicy {
 };
 EscalationPolicy escalation = {false, (uint8_t)(ESC_METRIC_ERR | ESC_METRIC_TIMEOUT), 3, 2000, 5000, RULE_ACT_ALERT, 0, 0, 0, 0, 0, 0, 0};
 
+struct FailsafePolicy {
+  bool enabled;
+  bool active;
+  uint16_t threshold;
+  uint16_t windowMs;
+  uint16_t holdMs;
+  unsigned long lastEvalMs;
+  unsigned long lastErrTotal;
+  unsigned long lastTimeoutTotal;
+  unsigned long lastEscTotal;
+  unsigned long enterMs;
+  unsigned long fireCount;
+  bool prevBridge;
+  bool prevWatch;
+  bool prevLinks;
+  bool prevRules;
+};
+FailsafePolicy failsafe = {false, false, 4, 2000, 8000, 0, 0, 0, 0, 0, 0, false, false, false, false};
+
 // Event hooks
 struct EventHook {
   bool enabled;
@@ -1172,6 +1191,86 @@ void printEscalationStatus() {
   Serial.print(F("ESC_FIRES=")); Serial.println(escalation.fireCount);
 }
 
+void printFailsafeStatus() {
+  Serial.print(F("SAFE="));
+  Serial.println(failsafe.enabled ? F("ON") : F("OFF"));
+  Serial.print(F("SAFE_ACTIVE="));
+  Serial.println(failsafe.active ? F("YES") : F("NO"));
+  Serial.print(F("SAFE_THRESHOLD=")); Serial.println(failsafe.threshold);
+  Serial.print(F("SAFE_WINDOW_MS=")); Serial.println(failsafe.windowMs);
+  Serial.print(F("SAFE_HOLD_MS=")); Serial.println(failsafe.holdMs);
+  Serial.print(F("SAFE_FIRES=")); Serial.println(failsafe.fireCount);
+}
+
+void exitFailsafe() {
+  if (!failsafe.active) return;
+  bridgeMode = failsafe.prevBridge;
+  watchEnabled = failsafe.prevWatch;
+  linkIndicatorsEnabled = failsafe.prevLinks;
+  rulesEnabled = failsafe.prevRules;
+  failsafe.active = false;
+  failsafe.lastErrTotal = getTotalLinkErrors();
+  failsafe.lastTimeoutTotal = getTotalTimeouts();
+  failsafe.lastEscTotal = escalation.fireCount;
+  failsafe.lastEvalMs = millis();
+  addEventLogC(EVLOG_INFO, "SAFE EXIT");
+  Serial.println(F("SAFE:EXIT"));
+}
+
+void enterFailsafe(unsigned long dErr, unsigned long dTo, unsigned long dEsc) {
+  failsafe.active = true;
+  failsafe.enterMs = millis();
+  failsafe.fireCount++;
+  failsafe.prevBridge = bridgeMode;
+  failsafe.prevWatch = watchEnabled;
+  failsafe.prevLinks = linkIndicatorsEnabled;
+  failsafe.prevRules = rulesEnabled;
+
+  bridgeMode = false;
+  watchEnabled = false;
+  linkIndicatorsEnabled = false;
+  rulesEnabled = false;
+
+  char em[EVENT_LOG_MSG_LEN];
+  snprintf(em, sizeof(em), "SAFE e%lu t%lu s%lu", dErr, dTo, dEsc);
+  addEventLogC(EVLOG_ERR, em);
+  showTextBottom("SAFE MODE ACTIVE");
+  Serial.print(F("SAFE:ENTER "));
+  Serial.println(em);
+}
+
+void evaluateFailsafe() {
+  if (!failsafe.enabled) return;
+  unsigned long now = millis();
+
+  if (failsafe.active) {
+    if (now - failsafe.enterMs >= failsafe.holdMs) {
+      exitFailsafe();
+    } else {
+      return;
+    }
+  }
+
+  if (now - failsafe.lastEvalMs < failsafe.windowMs) return;
+
+  unsigned long totalErr = getTotalLinkErrors();
+  unsigned long totalTo = getTotalTimeouts();
+  unsigned long totalEsc = escalation.fireCount;
+  unsigned long dErr = totalErr - failsafe.lastErrTotal;
+  unsigned long dTo = totalTo - failsafe.lastTimeoutTotal;
+  unsigned long dEsc = totalEsc - failsafe.lastEscTotal;
+  unsigned long score = dErr + dTo + dEsc;
+
+  if (score >= failsafe.threshold) {
+    enterFailsafe(dErr, dTo, dEsc);
+  }
+
+  failsafe.lastErrTotal = totalErr;
+  failsafe.lastTimeoutTotal = totalTo;
+  failsafe.lastEscTotal = totalEsc;
+  failsafe.lastEvalMs = now;
+}
+
 void applySmartProfile(uint8_t profile) {
   smartProfile = profile;
   if (profile == PROFILE_SAFE) {
@@ -1245,6 +1344,7 @@ void printSmartSummary() {
   Serial.print(F("Threshold Events: ")); Serial.println(thresholdEventCount);
   Serial.print(F("Event Log Count: ")); Serial.println(eventLogCount);
   printEscalationStatus();
+  printFailsafeStatus();
 
   int16_t score = 100;
   uint8_t q1 = calcLinkQuality(1);
@@ -1758,6 +1858,7 @@ void loop() {
 
   evaluateRules();
   evaluateEscalation();
+  evaluateFailsafe();
 
   if (cmdReady) {
     processCmd(cmd);
@@ -2548,6 +2649,14 @@ void processCmd(String c) {
       Serial.print(F("Profile: ")); Serial.println(profileName(smartProfile));
       Serial.print(F("Escalation: ")); Serial.println(escalation.enabled ? F("ON") : F("OFF"));
       Serial.print(F("Esc Fires: ")); Serial.println(escalation.fireCount);
+      Serial.print(F("Failsafe: "));
+      if (failsafe.enabled) {
+        Serial.print(F("ON "));
+        Serial.println(failsafe.active ? F("(ACTIVE)") : F("(IDLE)"));
+      } else {
+        Serial.println(F("OFF"));
+      }
+      Serial.print(F("Safe Fires: ")); Serial.println(failsafe.fireCount);
       Serial.print(F("WDT: "));
       if (wdtEnabled) {
         Serial.print(F("ON @"));
@@ -2821,6 +2930,54 @@ void processCmd(String c) {
         Serial.println(F("ERR:ESC_CMD"));
       }
 
+    } else if (c.startsWith("#SAFE ")) {
+      String param = c.substring(6);
+      param.trim();
+      if (param == "?" || param == "STATUS") {
+        printFailsafeStatus();
+      } else if (param == "ON") {
+        failsafe.enabled = true;
+        failsafe.lastErrTotal = getTotalLinkErrors();
+        failsafe.lastTimeoutTotal = getTotalTimeouts();
+        failsafe.lastEscTotal = escalation.fireCount;
+        failsafe.lastEvalMs = millis();
+        Serial.println(F("OK:SAFE_ON"));
+      } else if (param == "OFF") {
+        if (failsafe.active) exitFailsafe();
+        failsafe.enabled = false;
+        Serial.println(F("OK:SAFE_OFF"));
+      } else if (param == "CLEAR") {
+        if (failsafe.active) exitFailsafe();
+        failsafe.fireCount = 0;
+        failsafe.lastErrTotal = getTotalLinkErrors();
+        failsafe.lastTimeoutTotal = getTotalTimeouts();
+        failsafe.lastEscTotal = escalation.fireCount;
+        failsafe.lastEvalMs = millis();
+        Serial.println(F("OK:SAFE_CLEAR"));
+      } else if (param.startsWith("SET ")) {
+        // #SAFE SET <threshold> <window_ms> <hold_ms>
+        String rest = param.substring(4);
+        int p1 = rest.indexOf(' ');
+        int p2 = (p1 > 0) ? rest.indexOf(' ', p1 + 1) : -1;
+        if (p1 < 0 || p2 < 0) {
+          Serial.println(F("ERR:FORMAT #SAFE SET <threshold> <window_ms> <hold_ms>"));
+        } else {
+          uint16_t th = (uint16_t)max(1, rest.substring(0, p1).toInt());
+          uint16_t win = (uint16_t)max(200, rest.substring(p1 + 1, p2).toInt());
+          uint16_t hold = (uint16_t)max(500, rest.substring(p2 + 1).toInt());
+          failsafe.threshold = th;
+          failsafe.windowMs = win;
+          failsafe.holdMs = hold;
+          failsafe.lastErrTotal = getTotalLinkErrors();
+          failsafe.lastTimeoutTotal = getTotalTimeouts();
+          failsafe.lastEscTotal = escalation.fireCount;
+          failsafe.lastEvalMs = millis();
+          Serial.println(F("OK:SAFE_SET"));
+        }
+      } else {
+        Serial.println(F("ERR:SAFE_CMD"));
+      }
+
 
     } else if (c.startsWith("#RULE ")) {
       // #RULE ON|OFF|?|LIST|CLEAR <id|ALL>|ADD <expr> [FOR <ms>] THEN <action>
@@ -2973,6 +3130,8 @@ void processCmd(String c) {
       Serial.print(F("Threshold Events: ")); Serial.println(thresholdEventCount);
       Serial.print(F("Rule Fires: ")); Serial.println(ruleFireCount);
       Serial.print(F("Escalations: ")); Serial.println(escalation.fireCount);
+      Serial.print(F("Failsafe Fires: ")); Serial.println(failsafe.fireCount);
+      Serial.print(F("Failsafe Active: ")); Serial.println(failsafe.active ? F("YES") : F("NO"));
       Serial.print(F("Addr Local/Pass: ")); Serial.print(addrLocalHandled); Serial.print(F("/")); Serial.println(addrPassthrough);
       for (uint8_t id = 1; id <= 3; id++) {
         Serial.print(F("F")); Serial.print(id);
@@ -3001,6 +3160,12 @@ void processCmd(String c) {
       escalation.lastTimeoutTotal = getTotalTimeouts();
       escalation.lastRuleTotal = 0;
       escalation.lastEvalMs = millis();
+      if (failsafe.active) exitFailsafe();
+      failsafe.fireCount = 0;
+      failsafe.lastErrTotal = getTotalLinkErrors();
+      failsafe.lastTimeoutTotal = getTotalTimeouts();
+      failsafe.lastEscTotal = escalation.fireCount;
+      failsafe.lastEvalMs = millis();
       eventLogCount = 0;
       eventLogHead = 0;
       Serial.println(F("OK:HEALTHRESET"));
@@ -4085,6 +4250,8 @@ void help() {
   Serial.println(F("  #SUMMARY"));
   Serial.println(F("  #ESC <ON|OFF|?|RESET>"));
   Serial.println(F("  #ESC SET <ERR|TIMEOUT|RULE|ALL> <threshold> <window_ms> <LOG|ALERT|MACRO n>"));
+  Serial.println(F("  #SAFE <ON|OFF|?|CLEAR>"));
+  Serial.println(F("  #SAFE SET <threshold> <window_ms> <hold_ms>"));
   Serial.println(F("  #RULE ?|ON|OFF|LIST"));
   Serial.println(F("  #RULE ADD <expr> [FOR <ms>] THEN <MACRO id|LOG|ALERT>"));
   Serial.println(F("  #RULE CLEAR <id|ALL>"));
