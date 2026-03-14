@@ -11,16 +11,24 @@ For complete setup, command reference, and troubleshooting, use the repository r
 From repo root:
 
 ```powershell
-arduino-cli compile --fqbn arduino:avr:mega --libraries ".\\Libraries" ".\\mega_ili9486_serial_display"
-arduino-cli upload -p COM4 --fqbn arduino:avr:mega ".\\mega_ili9486_serial_display"
+arduino-cli compile --fqbn arduino:avr:mega --libraries ".\\Libraries" ".\\_compile_stage_mega"
+arduino-cli upload -p COM4 --fqbn arduino:avr:mega ".\\_compile_stage_mega"
 ```
 
 Replace `COM4` with your board port.
+
+### Staging note
+
+`arduino-cli` expects the sketch file name to match the folder name.  
+This firmware file is `mega_ili9486_split_text.ino`, so use a temporary staging folder
+with a renamed main sketch file (for example `_compile_stage_mega/_compile_stage_mega.ino`).
 
 ## Quick Smoke Test
 
 1. Open serial monitor at `115200`
 2. Send `#HELP`
 3. Send `#STATUS`
-4. Send `#MENU`
-5. Send `#TOUCHCAL ?`
+4. Send `#VERSION`
+5. Send `#WDT ?`
+6. Send `#SAFE ?`
+7. Send `#WHY`
