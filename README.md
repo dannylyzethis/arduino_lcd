@@ -122,12 +122,12 @@ arduino-cli core update-index
 arduino-cli core install arduino:avr
 
 arduino-cli compile --fqbn arduino:avr:mega ".\mega_ili9486_serial_display"
-arduino-cli upload -p COM3 --fqbn arduino:avr:mega ".\mega_ili9486_serial_display"
+arduino-cli upload -p COM4 --fqbn arduino:avr:mega ".\mega_ili9486_serial_display"
 ```
 
 Tips:
 
-- Replace `COM3` with your actual board port.
+- Replace `COM4` with your actual board port.
 - Use `arduino-cli board list` to discover the port.
 - If upload fails because the serial port is busy, close Serial Monitor first.
 
@@ -326,9 +326,9 @@ For this branch, use this `README.md` + runtime `#HELP` output as primary refere
 
 Validated via `arduino-cli compile` on March 14, 2026:
 
-- Flash: `144,536 / 253,952` bytes (`56%`)
-- RAM: `6,410 / 8,192` bytes (`78%`)
-- Estimated free RAM for locals/stack: `1,782` bytes
+- Flash: `144,462 / 253,952` bytes (`56%`)
+- RAM: `6,416 / 8,192` bytes (`78%`)
+- Estimated free RAM for locals/stack: `1,776` bytes
 
 ## Firmware Versioning
 

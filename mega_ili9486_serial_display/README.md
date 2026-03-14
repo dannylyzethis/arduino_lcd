@@ -36,10 +36,10 @@ From repo root:
 
 ```powershell
 arduino-cli compile --fqbn arduino:avr:mega ".\mega_ili9486_serial_display"
-arduino-cli upload -p COM3 --fqbn arduino:avr:mega ".\mega_ili9486_serial_display"
+arduino-cli upload -p COM4 --fqbn arduino:avr:mega ".\mega_ili9486_serial_display"
 ```
 
-Replace `COM3` with your board port (`arduino-cli board list` to find it).
+Replace `COM4` with your board port (`arduino-cli board list` to find it).
 
 ## Quick Smoke Test
 
