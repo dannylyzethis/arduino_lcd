@@ -1,4 +1,6 @@
 @echo off
+REM LEGACY UNO PATH: This script targets ili9341_serial_display.
+REM For Mega + ILI9486/9488, use the root README and mega_ili9486_serial_display.
 REM ==============================================
 REM  ILI9341 LCD Serial Controller - Windows Batch
 REM ==============================================

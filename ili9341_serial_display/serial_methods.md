@@ -1,4 +1,15 @@
-# Serial Communication Guide - No Python Required!
+# Serial Communication Guide (Legacy Uno / ILI9341)
+
+This document is for the **legacy Uno + ILI9341** workflow in `ili9341_serial_display/`.
+
+For the current primary branch workflow (**Mega + ILI9486/9488**), use:
+
+- `README.md` at repository root
+- `mega_ili9486_serial_display/README.md`
+
+---
+
+# Legacy Serial Communication Guide - No Python Required!
 
 ## Method 1: Arduino Serial Monitor (Easiest)
 1. Upload the sketch to your Arduino
@@ -79,7 +90,7 @@ send_to_lcd.bat "Hello World"
 send_to_lcd.bat "#CLEAR"
 ```
 
-## Available Commands:
+## Available Commands
 - **Text**: Just type any text and press Enter
 - **#CLEAR** - Clear the screen
 - **#COLOR <color>** - Change text color (RED, GREEN, BLUE, YELLOW, CYAN, MAGENTA, WHITE)
@@ -91,7 +102,11 @@ send_to_lcd.bat "#CLEAR"
 - **#INFO** - Show current settings
 - **#HELP** - Show help
 
-## Tips:
+## Mega Branch Note
+- The Mega firmware uses `115200` baud and a much larger command set (`#STATUS`, `#MENU`, `#FPGASEL`, `#TOUCHCAL`, GPIO/I2C/SPI/EEPROM/Analog commands).
+- Refer to root `README.md` for the up-to-date command reference.
+
+## Tips
 - Always use 9600 baud rate (or change it in both sketch and terminal)
 - Press Enter after each command
 - Commands starting with # are special commands

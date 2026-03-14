@@ -1,15 +1,22 @@
-# ILI9341 LCD to Arduino Uno Wiring Guide
+# ILI9341 LCD to Arduino Uno Wiring Guide (Legacy)
+
+This guide is for the **legacy Uno + ILI9341** path in `ili9341_serial_display/`.
+
+For the current primary firmware (**Mega + ILI9486/9488**), use:
+
+- root `README.md`
+- `mega_ili9486_serial_display/README.md`
 
 ## Pin Connections
 
-### SPI Connections (Required):
+### SPI Connections (Required)
 ```
 ILI9341 Pin    ->  Arduino Uno Pin
 ----------------------------------------
 VCC            ->  5V (or 3.3V if your display requires it)
 GND            ->  GND
 CS (Chip Select) -> Pin 10
-RESET/RST      ->  Pin 8  
+RESET/RST      ->  Pin 8
 DC/RS          ->  Pin 9
 SDI/MOSI       ->  Pin 11
 SCK            ->  Pin 13
@@ -17,21 +24,19 @@ LED            ->  3.3V (for backlight)
 SDO/MISO       ->  Pin 12 (optional, for reading from display)
 ```
 
-## Important Notes:
+## Important Notes
 
 1. **Voltage**: Most ILI9341 modules have onboard voltage regulators and level shifters, so they can work with 5V Arduino Uno. Check your specific module documentation.
-
 2. **Backlight**: The LED pin controls the backlight. Connect to 3.3V or 5V through a resistor (100-330 ohms) if needed.
-
 3. **SD Card** (if your module has one): The SD card shares the SPI bus but needs a separate CS pin (you can use pin 4 for SD_CS).
 
-## Required Libraries:
+## Required Libraries (Legacy Path)
 
 Install these through Arduino IDE Library Manager:
 - Adafruit GFX Library
 - Adafruit ILI9341
 
-## Installation Steps:
+## Installation Steps (Legacy Path)
 
 1. Open Arduino IDE
 2. Go to Tools -> Manage Libraries
