@@ -282,16 +282,16 @@ void loop() {
           py = map(p.y, TS_MAXY, TS_MINY, 0, screenH);
           break;
         case 1:
-          px = map(p.y, TS_MINY, TS_MAXY, 0, screenW);
-          py = map(p.x, TS_MINX, TS_MAXX, 0, screenH);
+          px = map(p.y, TS_MAXY, TS_MINY, 0, screenW);
+          py = map(p.x, TS_MAXX, TS_MINX, 0, screenH);
           break;
         case 2:
           px = map(p.x, TS_MAXX, TS_MINX, 0, screenW);
           py = map(p.y, TS_MINY, TS_MAXY, 0, screenH);
           break;
         case 3:
-          px = map(p.y, TS_MAXY, TS_MINY, 0, screenW);
-          py = map(p.x, TS_MAXX, TS_MINX, 0, screenH);
+          px = map(p.y, TS_MINY, TS_MAXY, 0, screenW);
+          py = map(p.x, TS_MINX, TS_MAXX, 0, screenH);
           break;
       }
 
