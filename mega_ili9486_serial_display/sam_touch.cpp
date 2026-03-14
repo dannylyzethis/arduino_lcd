@@ -130,23 +130,16 @@ void checkTouch() {
   digitalWrite(XM, HIGH);
   digitalWrite(YP, HIGH);
 
+  if (p.z < MINPRESSURE || p.z > MAXPRESSURE) return;
+
+  lastTouch = now;  // debounce all touch paths
+
   Serial.print(F("[TOUCH] Raw: X="));
   Serial.print(p.x);
   Serial.print(F(" Y="));
   Serial.print(p.y);
   Serial.print(F(" Z="));
-  Serial.print(p.z);
-  Serial.print(F(" (Range: "));
-  Serial.print(MINPRESSURE);
-  Serial.print(F("-"));
-  Serial.print(MAXPRESSURE);
-  Serial.print(F(")"));
-
-  if (p.z < MINPRESSURE || p.z > MAXPRESSURE) {
-    Serial.println(F(" - NO TOUCH"));
-    return;
-  }
-  Serial.println(F(" - TOUCH DETECTED!"));
+  Serial.println(p.z);
 
   if (touchTestMode) {
     lastTouch = now;
@@ -162,23 +155,23 @@ void checkTouch() {
     switch (rotation) {
       case 0:
         px = map(p.x, TS_MINX, TS_MAXX, 0, screenW);
-        py = map(p.y, TS_MINY, TS_MAXY, 0, screenH);
+        py = map(p.y, TS_MAXY, TS_MINY, 0, screenH);
         break;
       case 1:
         px = map(p.y, TS_MINY, TS_MAXY, 0, screenW);
-        py = map(p.x, TS_MAXX, TS_MINX, 0, screenH);
+        py = map(p.x, TS_MINX, TS_MAXX, 0, screenH);
         break;
       case 2:
         px = map(p.x, TS_MAXX, TS_MINX, 0, screenW);
-        py = map(p.y, TS_MAXY, TS_MINY, 0, screenH);
+        py = map(p.y, TS_MINY, TS_MAXY, 0, screenH);
         break;
       case 3:
         px = map(p.y, TS_MAXY, TS_MINY, 0, screenW);
-        py = map(p.x, TS_MINX, TS_MAXX, 0, screenH);
+        py = map(p.x, TS_MAXX, TS_MINX, 0, screenH);
         break;
       default:
         px = map(p.x, TS_MINX, TS_MAXX, 0, screenW);
-        py = map(p.y, TS_MINY, TS_MAXY, 0, screenH);
+        py = map(p.y, TS_MAXY, TS_MINY, 0, screenH);
         break;
     }
 
@@ -197,23 +190,23 @@ void checkTouch() {
   switch (rotation) {
     case 0:
       px = map(p.x, TS_MINX, TS_MAXX, 0, screenW);
-      py = map(p.y, TS_MINY, TS_MAXY, 0, screenH);
+      py = map(p.y, TS_MAXY, TS_MINY, 0, screenH);
       break;
     case 1:
       px = map(p.y, TS_MINY, TS_MAXY, 0, screenW);
-      py = map(p.x, TS_MAXX, TS_MINX, 0, screenH);
+      py = map(p.x, TS_MINX, TS_MAXX, 0, screenH);
       break;
     case 2:
       px = map(p.x, TS_MAXX, TS_MINX, 0, screenW);
-      py = map(p.y, TS_MAXY, TS_MINY, 0, screenH);
+      py = map(p.y, TS_MINY, TS_MAXY, 0, screenH);
       break;
     case 3:
       px = map(p.y, TS_MAXY, TS_MINY, 0, screenW);
-      py = map(p.x, TS_MINX, TS_MAXX, 0, screenH);
+      py = map(p.x, TS_MAXX, TS_MINX, 0, screenH);
       break;
     default:
       px = map(p.x, TS_MINX, TS_MAXX, 0, screenW);
-      py = map(p.y, TS_MINY, TS_MAXY, 0, screenH);
+      py = map(p.y, TS_MAXY, TS_MINY, 0, screenH);
       break;
   }
 

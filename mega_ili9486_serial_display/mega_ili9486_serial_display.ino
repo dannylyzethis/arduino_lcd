@@ -278,20 +278,20 @@ void loop() {
       int16_t px, py;
       switch (tft.getRotation()) {
         case 0:
-          px = map(p.y, TS_MINY, TS_MAXY, 0, screenW);
-          py = map(p.x, TS_MINX, TS_MAXX, 0, screenH);
-          break;
-        case 1:
           px = map(p.x, TS_MINX, TS_MAXX, 0, screenW);
           py = map(p.y, TS_MAXY, TS_MINY, 0, screenH);
           break;
-        case 2:
-          px = map(p.y, TS_MAXY, TS_MINY, 0, screenW);
-          py = map(p.x, TS_MAXX, TS_MINX, 0, screenH);
+        case 1:
+          px = map(p.y, TS_MINY, TS_MAXY, 0, screenW);
+          py = map(p.x, TS_MINX, TS_MAXX, 0, screenH);
           break;
-        case 3:
+        case 2:
           px = map(p.x, TS_MAXX, TS_MINX, 0, screenW);
           py = map(p.y, TS_MINY, TS_MAXY, 0, screenH);
+          break;
+        case 3:
+          px = map(p.y, TS_MAXY, TS_MINY, 0, screenW);
+          py = map(p.x, TS_MAXX, TS_MINX, 0, screenH);
           break;
       }
 
