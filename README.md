@@ -6,6 +6,14 @@ This repository contains Arduino display + control firmware, with the **primary 
 
 SAM (Smart Arduino Monitor) is the Mega firmware in this repository: a split/full-screen control console for FPGA and peripherals, with serial commands and touch-driven navigation.
 
+## Manual
+
+Primary manual set:
+- `docs/manual/index.md`
+- Operator guide: `docs/manual/operator-manual.md`
+- Full command reference: `docs/manual/command-reference.md`
+- Legacy appendix: `docs/manual/legacy-appendix.md`
+
 ## Branch Scope
 
 - Branch: `codex/sam-smart-features`

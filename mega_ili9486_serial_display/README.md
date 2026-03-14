@@ -6,6 +6,11 @@ This folder contains the primary firmware used on this branch:
 
 For complete setup, command reference, and troubleshooting, use the repository root `README.md`.
 
+Manual set:
+- `docs/manual/index.md`
+- `docs/manual/operator-manual.md`
+- `docs/manual/command-reference.md`
+
 ## Build and Upload
 
 From repo root:
