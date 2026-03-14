@@ -118,6 +118,9 @@
 
 MCUFRIEND_kbv tft;
 
+#define SAM_FIRMWARE_NAME "SAM Smart Arduino Monitor"
+#define SAM_FIRMWARE_VERSION "1.1.0"
+
 // Touchscreen pins (standard MCUFRIEND configuration for Mega)
 #define YP A3  // Y+ is on Analog3
 #define XM A2  // X- is on Analog2
@@ -235,6 +238,7 @@ uint16_t buttonTextY;  // Y position where button area starts
 
 // Touch debounce
 unsigned long lastTouch = 0;
+unsigned long lastViewToggleTouch = 0;
 #define TOUCH_DEBOUNCE 200  // milliseconds
 
 // ========== GPIO SYSTEM ==========
@@ -329,6 +333,66 @@ struct Macro {
 };
 Macro macros[MAX_MACROS];
 
+// Recursive macro protection
+uint8_t macroRunDepth = 0;
+const uint8_t MAX_MACRO_DEPTH = 2;
+
+// Display mode
+enum ViewMode {
+  VIEW_SPLIT = 0,
+  VIEW_FULL = 1
+};
+ViewMode viewMode = VIEW_SPLIT;
+
+// Protocol extensions (default OFF for compatibility)
+bool protoAddrMode = false;
+bool protoFrameMode = false;
+bool bridgeMode = false;
+uint8_t localAddress = 0x01;
+const uint8_t FRAME_SYNC = 0xAA;
+const uint8_t FRAME_MAX_PAYLOAD = 64;
+
+struct FrameRxState {
+  uint8_t stage;     // 0=sync,1=len,2=payload,3=crc
+  uint8_t len;
+  uint8_t idx;
+  uint8_t crc;
+  uint8_t payload[FRAME_MAX_PAYLOAD];
+};
+FrameRxState frameRx[4];
+
+// Runtime counters and health telemetry
+unsigned long fpgaRxBytes[4] = {0, 0, 0, 0};
+unsigned long fpgaTxBytes[4] = {0, 0, 0, 0};
+unsigned long fpgaFrameOk[4] = {0, 0, 0, 0};
+unsigned long fpgaFrameErr[4] = {0, 0, 0, 0};
+unsigned long fpgaDropped[4] = {0, 0, 0, 0};
+unsigned long fpgaTimeouts[4] = {0, 0, 0, 0};
+unsigned long fpgaLastActivityMs[4] = {0, 0, 0, 0};
+unsigned long fpgaLastErrorMs[4] = {0, 0, 0, 0};
+unsigned long gpioEventCount = 0;
+unsigned long thresholdEventCount = 0;
+unsigned long addrLocalHandled = 0;
+unsigned long addrPassthrough = 0;
+
+// Watch mode
+bool watchEnabled = false;
+bool linkIndicatorsEnabled = false;  // OFF by default so text area stays clean
+String watchSource = "A8";
+unsigned long watchIntervalMs = 1000;
+unsigned long watchLastMs = 0;
+
+// Event hooks
+struct EventHook {
+  bool enabled;
+  uint8_t macroId;
+  uint8_t modeMask;
+  uint16_t cooldownMs;
+  unsigned long lastTriggerMs;
+};
+EventHook gpioHooks[NUM_GPIO];
+EventHook thresholdHooks[8];
+
 // EEPROM Write Protection Zones (up to 4 protected ranges)
 #define MAX_PROTECT_ZONES 4
 struct ProtectZone {
@@ -392,7 +456,11 @@ bool isProtected(uint16_t addr) {
 #define ADDR_BTN_DOWN 48    // 16 bytes
 #define ADDR_BTN_LEFT 64    // 16 bytes
 #define ADDR_BTN_RIGHT 80   // 16 bytes
-// 96-99: Reserved
+// Extended config
+#define ADDR_VIEW_MODE 96   // 0=split, 1=full
+#define ADDR_PROTO_FLAGS 97 // bit0=addr mode, bit1=frame mode, bit2=bridge
+#define ADDR_PROTO_ADDR 98  // local address byte
+// 99: Reserved
 
 #define ADDR_FPGA_ZONE 100    // FPGA dedicated space (200 bytes)
 #define ADDR_USER_ZONE 300    // User settings (200 bytes)
@@ -469,6 +537,14 @@ void saveConfig() {
   for (uint8_t i = 0; i < 15; i++) {
     EEPROM.write(ADDR_BTN_RIGHT + 1 + i, btnRight.data[i]);
   }
+
+  EEPROM.write(ADDR_VIEW_MODE, (uint8_t)viewMode);
+  uint8_t protoFlags = 0;
+  if (protoAddrMode) protoFlags |= 0x01;
+  if (protoFrameMode) protoFlags |= 0x02;
+  if (bridgeMode) protoFlags |= 0x04;
+  EEPROM.write(ADDR_PROTO_FLAGS, protoFlags);
+  EEPROM.write(ADDR_PROTO_ADDR, localAddress);
 }
 
 // Load configuration from EEPROM
@@ -556,6 +632,16 @@ bool loadConfig() {
     btnRight.data[i] = EEPROM.read(ADDR_BTN_RIGHT + 1 + i);
   }
 
+  uint8_t vm = EEPROM.read(ADDR_VIEW_MODE);
+  viewMode = (vm == 1) ? VIEW_FULL : VIEW_SPLIT;
+
+  uint8_t protoFlags = EEPROM.read(ADDR_PROTO_FLAGS);
+  protoAddrMode = (protoFlags & 0x01) != 0;
+  protoFrameMode = (protoFlags & 0x02) != 0;
+  bridgeMode = (protoFlags & 0x04) != 0;
+  localAddress = EEPROM.read(ADDR_PROTO_ADDR);
+  if (localAddress == 0) localAddress = 0x01;
+
   return true;
 }
 
@@ -590,6 +676,216 @@ void pulseISR() {
   pulseCount++;
 }
 
+uint8_t crc8Simple(const uint8_t* data, uint8_t len) {
+  uint8_t crc = 0;
+  for (uint8_t i = 0; i < len; i++) {
+    crc ^= data[i];
+  }
+  return crc;
+}
+
+void applyViewMode() {
+  if (viewMode == VIEW_FULL) {
+    dividerY = screenH - 1;
+    topMaxY = screenH;
+    bottomMinY = 0;
+    bottomMaxY = screenH;
+    topPosX = topPosY = 0;
+    bottomPosX = 0;
+    bottomPosY = 0;
+  } else {
+    dividerY = screenH / 2;
+    topMaxY = dividerY - 2;
+    bottomMinY = dividerY + 2;
+    bottomMaxY = screenH;
+    if (topPosY >= topMaxY) topPosY = 0;
+    if (bottomPosY < bottomMinY || bottomPosY >= bottomMaxY) bottomPosY = bottomMinY;
+  }
+}
+
+bool parseHexBytesToBuffer(String hexStr, uint8_t* outBuf, uint8_t maxLen, uint8_t* outLen) {
+  if (!outBuf || !outLen) return false;
+  uint8_t byteCount = 0;
+  int startIdx = 0;
+  while (startIdx < hexStr.length() && byteCount < maxLen) {
+    while (startIdx < hexStr.length() && hexStr[startIdx] == ' ') startIdx++;
+    if (startIdx >= hexStr.length()) break;
+    int endIdx = startIdx;
+    while (endIdx < hexStr.length() && hexStr[endIdx] != ' ') endIdx++;
+    String token = hexStr.substring(startIdx, endIdx);
+    token.trim();
+    if (token.startsWith("0x") || token.startsWith("0X")) token = token.substring(2);
+    if (token.length() > 0) {
+      long value = strtol(token.c_str(), NULL, 16);
+      if (value < 0 || value > 255) return false;
+      outBuf[byteCount++] = (uint8_t)value;
+    }
+    startIdx = endIdx;
+  }
+  *outLen = byteCount;
+  return byteCount > 0;
+}
+
+void sendBytesToFPGA(HardwareSerial& fpga, uint8_t fpgaId, const uint8_t* data, uint8_t len, bool addTermination) {
+  if (!data || len == 0) return;
+
+  if (protoFrameMode) {
+    uint8_t crcInput[1 + FRAME_MAX_PAYLOAD];
+    crcInput[0] = len;
+    for (uint8_t i = 0; i < len; i++) crcInput[1 + i] = data[i];
+    uint8_t crc = crc8Simple(crcInput, len + 1);
+    fpga.write(FRAME_SYNC);
+    fpga.write(len);
+    for (uint8_t i = 0; i < len; i++) fpga.write(data[i]);
+    fpga.write(crc);
+    fpgaTxBytes[fpgaId] += (len + 3);
+  } else {
+    for (uint8_t i = 0; i < len; i++) fpga.write(data[i]);
+    if (addTermination) applyTermination(fpga);
+    fpgaTxBytes[fpgaId] += len + (addTermination ? 1 : 0);
+  }
+
+  fpgaLastActivityMs[fpgaId] = millis();
+}
+
+void runMacroSafe(uint8_t id, const __FlashStringHelper* sourceTag) {
+  if (id >= MAX_MACROS || !macros[id].defined) return;
+  if (macroRunDepth >= MAX_MACRO_DEPTH) {
+    Serial.println(F("ERR:MACRO_DEPTH"));
+    return;
+  }
+  macroRunDepth++;
+  Serial.print(F("HOOK_RUN: "));
+  Serial.print(sourceTag);
+  Serial.print(F(" -> MACRO "));
+  Serial.println(id);
+  for (uint8_t i = 0; i < macros[id].cmdCount; i++) {
+    processCmd(macros[id].commands[i]);
+    delay(30);
+  }
+  macroRunDepth--;
+}
+
+void triggerGPIOHook(uint8_t gpioIdx, bool rising) {
+  if (gpioIdx >= NUM_GPIO) return;
+  EventHook& hook = gpioHooks[gpioIdx];
+  if (!hook.enabled) return;
+  if (rising && !(hook.modeMask & 0x01)) return;
+  if (!rising && !(hook.modeMask & 0x02)) return;
+  unsigned long now = millis();
+  if (now - hook.lastTriggerMs < hook.cooldownMs) return;
+  hook.lastTriggerMs = now;
+  runMacroSafe(hook.macroId, F("GPIO"));
+}
+
+void triggerThresholdHook(uint8_t analogIdx, bool entering) {
+  if (analogIdx >= 8) return;
+  EventHook& hook = thresholdHooks[analogIdx];
+  if (!hook.enabled) return;
+  if (entering && !(hook.modeMask & 0x01)) return;
+  if (!entering && !(hook.modeMask & 0x02)) return;
+  unsigned long now = millis();
+  if (now - hook.lastTriggerMs < hook.cooldownMs) return;
+  hook.lastTriggerMs = now;
+  runMacroSafe(hook.macroId, F("THRESH"));
+}
+
+void updateWatch() {
+  if (!watchEnabled) return;
+  unsigned long now = millis();
+  if (now - watchLastMs < watchIntervalMs) return;
+  watchLastMs = now;
+
+  String msg = "WATCH ";
+  if (watchSource == "GPIO") {
+    uint8_t regVal = 0;
+    for (uint8_t i = 0; i < NUM_GPIO; i++) {
+      if (digitalRead(gpioPins[i])) regVal |= (1 << i);
+    }
+    msg += "GPIO=0x";
+    if (regVal < 16) msg += "0";
+    msg += String(regVal, HEX);
+  } else {
+    int idx = -1;
+    if (watchSource.length() == 2 && watchSource[0] == 'A') idx = watchSource[1] - '8';
+    if (watchSource.length() == 3 && watchSource[0] == 'A') idx = (watchSource[1] - '0') * 10 + (watchSource[2] - '0') - 8;
+    if (idx >= 0 && idx < 8) {
+      uint16_t v = analogRead(analogPins[idx]);
+      msg += watchSource;
+      msg += "=";
+      msg += String(v);
+    } else {
+      msg += "INVALID_SRC";
+    }
+  }
+  showTextBottom(msg);
+}
+
+void clearLinkIndicators() {
+  int baseX = screenW - 30;
+  int baseY = 4;
+  for (uint8_t id = 1; id <= 3; id++) {
+    int y = baseY + (id - 1) * 8;
+    tft.fillRect(baseX - 12, y - 4, 14, 10, 0x0000);
+  }
+}
+
+void drawLinkIndicators() {
+  static unsigned long lastDraw = 0;
+  unsigned long now = millis();
+  if (now - lastDraw < 300) return;
+  lastDraw = now;
+
+  int baseX = screenW - 30;
+  int baseY = 4;
+  for (uint8_t id = 1; id <= 3; id++) {
+    uint16_t col = 0x7BEF; // idle gray
+    if (now - fpgaLastErrorMs[id] < 2000) {
+      col = 0xF800; // red
+    } else if (now - fpgaLastActivityMs[id] < 1200) {
+      col = 0x07E0; // green
+    } else {
+      col = 0xFFE0; // yellow
+    }
+    int y = baseY + (id - 1) * 8;
+    tft.fillRect(baseX - 10, y - 2, 8, 6, 0x0000);
+    tft.fillCircle(baseX, y, 2, col);
+  }
+}
+
+void handleAddrSend(String hexData) {
+  uint8_t payload[FRAME_MAX_PAYLOAD];
+  uint8_t count = 0;
+  if (!parseHexBytesToBuffer(hexData, payload, FRAME_MAX_PAYLOAD, &count)) {
+    Serial.println(F("ERR:HEX"));
+    return;
+  }
+  if (count < 1) {
+    Serial.println(F("ERR:NO_BYTES"));
+    return;
+  }
+
+  HardwareSerial& fpga = getFPGA();
+  uint8_t target = payload[0];
+  if (protoAddrMode && target == localAddress) {
+    String localCmd = "";
+    for (uint8_t i = 1; i < count; i++) localCmd += (char)payload[i];
+    localCmd.trim();
+    addrLocalHandled++;
+    if (localCmd.length() > 0) {
+      processCmd(localCmd);
+      Serial.println(F("OK:ADDR_LOCAL"));
+    } else {
+      Serial.println(F("OK:ADDR_LOCAL_EMPTY"));
+    }
+    return;
+  }
+
+  sendBytesToFPGA(fpga, activeFpga, payload, count, false);
+  addrPassthrough++;
+  Serial.println(F("OK:ADDR_PASS"));
+}
+
 void setup() {
   Serial.begin(115200);      // USB/PC
 
@@ -618,16 +914,13 @@ void setup() {
   screenW = tft.width();
   screenH = tft.height();
 
-  // Split screen 50/50
-  dividerY = screenH / 2;
-  topMaxY = dividerY - 2;
-  bottomMinY = dividerY + 2;
-  bottomMaxY = screenH;
+  // Apply saved/default view mode geometry
+  applyViewMode();
 
   tft.fillScreen(0);
   drawDivider();
   topPosY = 0;
-  bottomPosY = bottomMinY;
+  bottomPosY = (viewMode == VIEW_FULL) ? 0 : bottomMinY;
 
   cmd.reserve(300);       // Mega has plenty of RAM
   fpgaBuffer.reserve(200);
@@ -648,14 +941,30 @@ void setup() {
   // Initialize I2C (Wire library)
   Wire.begin();
 
+  // Initialize event hooks defaults
+  for (uint8_t i = 0; i < NUM_GPIO; i++) {
+    gpioHooks[i].enabled = false;
+    gpioHooks[i].macroId = 0;
+    gpioHooks[i].modeMask = 0x03;
+    gpioHooks[i].cooldownMs = 300;
+    gpioHooks[i].lastTriggerMs = 0;
+  }
+  for (uint8_t i = 0; i < 8; i++) {
+    thresholdHooks[i].enabled = false;
+    thresholdHooks[i].macroId = 0;
+    thresholdHooks[i].modeMask = 0x03;
+    thresholdHooks[i].cooldownMs = 300;
+    thresholdHooks[i].lastTriggerMs = 0;
+  }
+
   // Startup message
   tft.setTextColor(0x07FF);  // Cyan
   tft.setTextSize(2);
-  tft.println(F("MEGA 2560"));
+  tft.println(F("SAM"));
   tft.setTextColor(0x07E0);  // Green
   tft.println(F("ILI9486/9488"));
   tft.setTextColor(0xFFE0);  // Yellow
-  tft.println(F("Split Screen"));
+  tft.println(F("Smart Arduino Monitor"));
   tft.setTextColor(0xFFFF);  // White
   tft.println(F("Text-Based"));
   tft.println(F("Touch Buttons"));
@@ -663,8 +972,10 @@ void setup() {
 
   topPosY = tft.getCursorY();
 
-  Serial.println(F("=== MEGA Split Screen ==="));
-  Serial.println(F("Text-Based Commands"));
+  Serial.println(F("=== SAM Smart Arduino Monitor ==="));
+  Serial.print(F("Firmware: v"));
+  Serial.println(F(SAM_FIRMWARE_VERSION));
+  Serial.println(F("Command Console"));
   Serial.print(F("Resolution: "));
   Serial.print(screenW);
   Serial.print(F("x"));
@@ -738,6 +1049,10 @@ void loop() {
 
   // Update statistics
   updateStats();
+  updateWatch();
+  if (linkIndicatorsEnabled) {
+    drawLinkIndicators();
+  }
 
   // Check threshold alerts
   static unsigned long lastThresholdCheck = 0;
@@ -771,6 +1086,161 @@ void checkFPGASerial(HardwareSerial& serial, uint8_t id) {
 
   while (serial.available()) {
     uint8_t byteVal = serial.read();
+    fpgaRxBytes[id]++;
+    fpgaLastActivityMs[id] = millis();
+
+    if (bridgeMode) {
+      Serial.print(F("[BRX"));
+      Serial.print(id);
+      Serial.print(F(" t="));
+      Serial.print(millis());
+      Serial.print(F("] 0x"));
+      if (byteVal < 16) Serial.print(F("0"));
+      Serial.println(byteVal, HEX);
+    }
+
+    if (protoFrameMode) {
+      FrameRxState& st = frameRx[id];
+      if (st.stage == 0) {
+        if (byteVal == FRAME_SYNC) {
+          st.stage = 1;
+        } else {
+          fpgaDropped[id]++;
+        }
+        continue;
+      } else if (st.stage == 1) {
+        if (byteVal == 0 || byteVal > FRAME_MAX_PAYLOAD) {
+          st.stage = 0;
+          fpgaFrameErr[id]++;
+          fpgaLastErrorMs[id] = millis();
+          continue;
+        }
+        st.len = byteVal;
+        st.idx = 0;
+        st.stage = 2;
+        continue;
+      } else if (st.stage == 2) {
+        st.payload[st.idx++] = byteVal;
+        if (st.idx >= st.len) st.stage = 3;
+        continue;
+      } else {  // stage 3 crc
+        uint8_t crcInput[1 + FRAME_MAX_PAYLOAD];
+        crcInput[0] = st.len;
+        for (uint8_t i = 0; i < st.len; i++) crcInput[1 + i] = st.payload[i];
+        uint8_t expectCrc = crc8Simple(crcInput, st.len + 1);
+        if (expectCrc != byteVal) {
+          fpgaFrameErr[id]++;
+          fpgaLastErrorMs[id] = millis();
+          st.stage = 0;
+          continue;
+        }
+        fpgaFrameOk[id]++;
+        st.stage = 0;
+        for (uint8_t p = 0; p < st.len; p++) {
+          uint8_t frameByte = st.payload[p];
+          byteVal = frameByte;
+          // fall-through to normal display parsing for each payload byte
+
+          if (rxMode == FPGA_RX_BINARY) {
+            // Binary mode: display based on parse mode
+            String byteStr = "";
+
+            switch (parseMode) {
+              case PARSE_ASCII:
+                // Show as ASCII with [XX] for non-printable
+                if (isPrintable(byteVal)) {
+                  byteStr = String((char)byteVal);
+                  Serial.write(byteVal);
+                } else {
+                  byteStr = "[";
+                  if (byteVal < 16) byteStr += "0";
+                  byteStr += String(byteVal, HEX);
+                  byteStr += "]";
+                  Serial.print(byteStr);
+                }
+                break;
+
+              case PARSE_DEC:
+                // Show as decimal
+                byteStr = String(byteVal);
+                Serial.print(byteVal);
+                Serial.print(F(" "));
+                break;
+
+              case PARSE_MIXED:
+                // Show both hex and ASCII: "0x41='A'"
+                byteStr = "0x";
+                if (byteVal < 16) byteStr += "0";
+                byteStr += String(byteVal, HEX);
+                if (isPrintable(byteVal)) {
+                  byteStr += "='";
+                  byteStr += (char)byteVal;
+                  byteStr += "'";
+                }
+                Serial.print(byteStr);
+                Serial.print(F(" "));
+                break;
+
+              case PARSE_NONE:
+              default:
+                // Default hex display
+                byteStr = "0x";
+                if (byteVal < 16) byteStr += "0";
+                byteStr += String(byteVal, HEX);
+                Serial.print(F("0x"));
+                if (byteVal < 16) Serial.print(F("0"));
+                Serial.print(byteVal, HEX);
+                Serial.print(F(" "));
+                break;
+            }
+
+            // Add to buffer for LCD display
+            if (fpgaBuffer.length() < 160) {
+              if (fpgaBuffer.length() > 0 && parseMode != PARSE_ASCII) {
+                fpgaBuffer += " ";
+              }
+              fpgaBuffer += byteStr;
+            } else {
+              // Buffer full, display and start new line
+              showTextBottom(fpgaBuffer);
+              fpgaBuffer = byteStr;
+            }
+
+            // Display every 10 bytes or on pause
+            static uint8_t byteCount = 0;
+            byteCount++;
+            if (byteCount >= 10) {
+              if (fpgaBuffer.length() > 0) {
+                showTextBottom(fpgaBuffer);
+                fpgaBuffer = "";
+              }
+              byteCount = 0;
+            }
+
+          } else {
+            // Text mode: parse as characters
+            char c = (char)byteVal;
+            Serial.write(c);  // Echo to PC
+
+            if (c == '\n' || c == '\r') {
+              if (fpgaBuffer.length() > 0) {
+                showTextBottom(fpgaBuffer);
+                fpgaBuffer = "";
+              }
+            } else if (isPrintable(c)) {
+              if (fpgaBuffer.length() < 180) {
+                fpgaBuffer += c;
+              } else {
+                showTextBottom(fpgaBuffer);
+                fpgaBuffer = "";
+                fpgaBuffer += c;
+              }
+            }
+          }
+        }
+        continue;
+      }
+    }
 
     if (rxMode == FPGA_RX_BINARY) {
       // Binary mode: display based on parse mode
@@ -885,7 +1355,9 @@ void serialEvent() {
 }
 
 void drawDivider() {
-  tft.drawLine(0, dividerY, screenW, dividerY, 0xFFFF);
+  if (viewMode == VIEW_SPLIT) {
+    tft.drawLine(0, dividerY, screenW, dividerY, 0xFFFF);
+  }
 }
 
 uint16_t getLines(const String& txt) {
@@ -948,6 +1420,11 @@ void showText(const String& txt) {
 }
 
 void showTextBottom(const String& txt) {
+  if (viewMode == VIEW_FULL) {
+    showText(txt);
+    return;
+  }
+
   uint16_t lines = getLinesBottom(txt);
   uint16_t lineH = BASE_CHAR_H * bottomTextSize;
   uint16_t needH = lines * lineH;
@@ -1050,9 +1527,21 @@ void readFPGAResponse(uint8_t numBytes, uint16_t timeout) {
   }
 
   if (bytesRead == 0) {
+    fpgaTimeouts[activeFpga]++;
+    fpgaLastErrorMs[activeFpga] = millis();
     Serial.println(F("TIMEOUT"));
     showTextBottom("FPGA: TIMEOUT");
     return;
+  }
+
+  if (bytesRead < numBytes) {
+    fpgaTimeouts[activeFpga]++;
+    fpgaLastErrorMs[activeFpga] = millis();
+    Serial.print(F("PARTIAL("));
+    Serial.print(bytesRead);
+    Serial.print(F("/"));
+    Serial.print(numBytes);
+    Serial.println(F(")"));
   }
 
   // Display based on RX mode
@@ -1152,12 +1641,10 @@ void processCmd(String c) {
     String data = c.substring(3);
     data.trim();
     HardwareSerial& fpga = getFPGA();
-
-    // Send data
-    fpga.print(data);
-
-    // Apply termination
-    applyTermination(fpga);
+    uint8_t raw[FRAME_MAX_PAYLOAD];
+    uint8_t len = (uint8_t)min((int)data.length(), (int)FRAME_MAX_PAYLOAD);
+    for (uint8_t i = 0; i < len; i++) raw[i] = (uint8_t)data[i];
+    sendBytesToFPGA(fpga, activeFpga, raw, len, true);
 
     Serial.print(F("OK:TX_S"));
     Serial.println(activeFpga);
@@ -1333,7 +1820,201 @@ void processCmd(String c) {
       Serial.println(tft.getRotation());
       Serial.print(F("Buttons: "));
       Serial.println(buttonsVisible ? F("VISIBLE") : F("HIDDEN"));
+      Serial.print(F("View: "));
+      Serial.println(viewMode == VIEW_FULL ? F("FULL") : F("SPLIT"));
+      Serial.print(F("ProtoAddr: "));
+      Serial.println(protoAddrMode ? F("ON") : F("OFF"));
+      Serial.print(F("ProtoFrame: "));
+      Serial.println(protoFrameMode ? F("ON") : F("OFF"));
+      Serial.print(F("Bridge: "));
+      Serial.println(bridgeMode ? F("ON") : F("OFF"));
+      Serial.print(F("LocalAddr: 0x"));
+      if (localAddress < 16) Serial.print(F("0"));
+      Serial.println(localAddress, HEX);
+      Serial.print(F("Counters RX/TX F1: "));
+      Serial.print(fpgaRxBytes[1]); Serial.print(F("/")); Serial.println(fpgaTxBytes[1]);
+      Serial.print(F("Counters RX/TX F2: "));
+      Serial.print(fpgaRxBytes[2]); Serial.print(F("/")); Serial.println(fpgaTxBytes[2]);
+      Serial.print(F("Counters RX/TX F3: "));
+      Serial.print(fpgaRxBytes[3]); Serial.print(F("/")); Serial.println(fpgaTxBytes[3]);
+      Serial.print(F("Addr Local/Pass: "));
+      Serial.print(addrLocalHandled); Serial.print(F("/")); Serial.println(addrPassthrough);
+      Serial.print(F("Watch: "));
+      Serial.print(watchEnabled ? F("ON " ) : F("OFF "));
+      Serial.print(watchSource); Serial.print(F(" @")); Serial.println(watchIntervalMs);
+      Serial.print(F("Links: ")); Serial.println(linkIndicatorsEnabled ? F("ON") : F("OFF"));
       Serial.println(F("============="));
+
+    } else if (c.startsWith("#VIEW ")) {
+      String param = c.substring(6);
+      param.trim();
+      if (param == "?") {
+        Serial.print(F("VIEW="));
+        Serial.println(viewMode == VIEW_FULL ? F("FULL") : F("SPLIT"));
+      } else if (param == "FULL") {
+        viewMode = VIEW_FULL;
+        applyViewMode();
+        tft.fillScreen(0x0000);
+        drawDivider();
+        saveConfig();
+        Serial.println(F("OK:VIEW_FULL"));
+      } else if (param == "SPLIT") {
+        viewMode = VIEW_SPLIT;
+        applyViewMode();
+        tft.fillScreen(0x0000);
+        drawDivider();
+        saveConfig();
+        Serial.println(F("OK:VIEW_SPLIT"));
+      } else {
+        Serial.println(F("ERR:USE_VIEW_FULL_SPLIT_?"));
+      }
+
+    } else if (c.startsWith("#ADDRMODE ")) {
+      String param = c.substring(10);
+      param.trim();
+      if (param == "?") {
+        Serial.print(F("ADDRMODE="));
+        Serial.println(protoAddrMode ? F("ON") : F("OFF"));
+      } else if (param == "ON") {
+        protoAddrMode = true;
+        saveConfig();
+        Serial.println(F("OK:ADDRMODE_ON"));
+      } else if (param == "OFF") {
+        protoAddrMode = false;
+        saveConfig();
+        Serial.println(F("OK:ADDRMODE_OFF"));
+      }
+
+    } else if (c.startsWith("#ADDR ")) {
+      String param = c.substring(6);
+      param.trim();
+      if (param == "?") {
+        Serial.print(F("ADDR=0x"));
+        if (localAddress < 16) Serial.print(F("0"));
+        Serial.println(localAddress, HEX);
+      } else {
+        uint8_t v = (uint8_t)strtol(param.c_str(), NULL, 0);
+        if (v == 0) {
+          Serial.println(F("ERR:ADDR_1_255"));
+        } else {
+          localAddress = v;
+          saveConfig();
+          Serial.println(F("OK:ADDR"));
+        }
+      }
+
+    } else if (c.startsWith("#FRAME ")) {
+      String param = c.substring(7);
+      param.trim();
+      if (param == "?") {
+        Serial.print(F("FRAME="));
+        Serial.println(protoFrameMode ? F("ON") : F("OFF"));
+      } else if (param == "ON") {
+        protoFrameMode = true;
+        saveConfig();
+        Serial.println(F("OK:FRAME_ON"));
+      } else if (param == "OFF") {
+        protoFrameMode = false;
+        for (uint8_t id = 1; id <= 3; id++) frameRx[id].stage = 0;
+        saveConfig();
+        Serial.println(F("OK:FRAME_OFF"));
+      } else {
+        Serial.println(F("ERR:USE_FRAME_ON_OFF_?"));
+      }
+
+    } else if (c.startsWith("#BRIDGE ")) {
+      String param = c.substring(8);
+      param.trim();
+      if (param == "?") {
+        Serial.print(F("BRIDGE="));
+        Serial.println(bridgeMode ? F("ON") : F("OFF"));
+      } else if (param == "ON") {
+        bridgeMode = true;
+        saveConfig();
+        Serial.println(F("OK:BRIDGE_ON"));
+      } else if (param == "OFF") {
+        bridgeMode = false;
+        saveConfig();
+        Serial.println(F("OK:BRIDGE_OFF"));
+      }
+
+    } else if (c.startsWith("#ADDRSEND ")) {
+      String hexData = c.substring(10);
+      hexData.trim();
+      handleAddrSend(hexData);
+
+    } else if (c.startsWith("#WATCH ")) {
+      String param = c.substring(7);
+      param.trim();
+      if (param == "?" || param == "STATUS") {
+        Serial.print(F("WATCH="));
+        Serial.println(watchEnabled ? F("ON") : F("OFF"));
+        Serial.print(F("WATCHSRC="));
+        Serial.println(watchSource);
+        Serial.print(F("WATCHMS="));
+        Serial.println(watchIntervalMs);
+      } else if (param == "STOP") {
+        watchEnabled = false;
+        Serial.println(F("OK:WATCH_STOP"));
+      } else if (param.startsWith("START ")) {
+        int sp = param.indexOf(' ', 6);
+        if (sp > 0) {
+          watchSource = param.substring(6, sp);
+          watchSource.toUpperCase();
+          watchIntervalMs = max(100UL, (unsigned long)param.substring(sp + 1).toInt());
+          watchEnabled = true;
+          watchLastMs = 0;
+          Serial.println(F("OK:WATCH_START"));
+        } else {
+          Serial.println(F("ERR:FORMAT #WATCH START <A8..A15|GPIO> <MS>"));
+        }
+      }
+
+    } else if (c.startsWith("#LINKS ") ) {
+      String param = c.substring(7);
+      param.trim();
+      if (param == "?") {
+        Serial.print(F("LINKS="));
+        Serial.println(linkIndicatorsEnabled ? F("ON") : F("OFF"));
+      } else if (param == "ON") {
+        linkIndicatorsEnabled = true;
+        Serial.println(F("OK:LINKS_ON"));
+      } else if (param == "OFF") {
+        linkIndicatorsEnabled = false;
+        clearLinkIndicators();
+        Serial.println(F("OK:LINKS_OFF"));
+      } else {
+        Serial.println(F("ERR:USE_LINKS_ON_OFF_?"));
+      }
+
+    } else if (c == "#HEALTH") {
+      Serial.println(F("=== HEALTH ==="));
+      Serial.print(F("Uptime(ms): ")); Serial.println(millis());
+      Serial.print(F("FreeRAM: ")); Serial.println(getFreeRAM());
+      Serial.print(F("GPIO Events: ")); Serial.println(gpioEventCount);
+      Serial.print(F("Threshold Events: ")); Serial.println(thresholdEventCount);
+      Serial.print(F("Addr Local/Pass: ")); Serial.print(addrLocalHandled); Serial.print(F("/")); Serial.println(addrPassthrough);
+      for (uint8_t id = 1; id <= 3; id++) {
+        Serial.print(F("F")); Serial.print(id);
+        Serial.print(F(" RX=")); Serial.print(fpgaRxBytes[id]);
+        Serial.print(F(" TX=")); Serial.print(fpgaTxBytes[id]);
+        Serial.print(F(" OK=")); Serial.print(fpgaFrameOk[id]);
+        Serial.print(F(" ERR=")); Serial.print(fpgaFrameErr[id]);
+        Serial.print(F(" DROP=")); Serial.print(fpgaDropped[id]);
+        Serial.print(F(" TO=")); Serial.println(fpgaTimeouts[id]);
+      }
+      Serial.println(F("=============="));
+
+    } else if (c == "#HEALTHRESET") {
+      for (uint8_t id = 1; id <= 3; id++) {
+        fpgaRxBytes[id] = fpgaTxBytes[id] = fpgaFrameOk[id] = 0;
+        fpgaFrameErr[id] = fpgaDropped[id] = fpgaTimeouts[id] = 0;
+      }
+      gpioEventCount = 0;
+      thresholdEventCount = 0;
+      addrLocalHandled = 0;
+      addrPassthrough = 0;
+      Serial.println(F("OK:HEALTHRESET"));
 
     } else if (c.startsWith("#FPGASEL")) {
       String param = c.substring(8);
@@ -1527,14 +2208,16 @@ void processCmd(String c) {
     } else if (c.startsWith("#FPGASEND ")) {
       String data = c.substring(10);
       HardwareSerial& fpga = getFPGA();
-      fpga.print(data);
-      applyTermination(fpga);
+      uint8_t raw[FRAME_MAX_PAYLOAD];
+      uint8_t len = (uint8_t)min((int)data.length(), (int)FRAME_MAX_PAYLOAD);
+      for (uint8_t i = 0; i < len; i++) raw[i] = (uint8_t)data[i];
+      sendBytesToFPGA(fpga, activeFpga, raw, len, true);
       Serial.println(F("OK:SENT"));
 
     } else if (c == "#FPGAPING") {
       HardwareSerial& fpga = getFPGA();
-      fpga.print(F("PING"));
-      applyTermination(fpga);
+      const uint8_t pingData[4] = {'P','I','N','G'};
+      sendBytesToFPGA(fpga, activeFpga, pingData, 4, true);
       Serial.println(F("OK:PING"));
 
     } else if (c.startsWith("#FPGABYTES ")) {
@@ -1828,6 +2511,96 @@ void processCmd(String c) {
     } else if (c == "#THRESHOLDSTATUS") {
       handleThresholdStatus();
 
+    } else if (c.startsWith("#HOOK ")) {
+      // #HOOK GPIO <pin> <RISE|FALL|BOTH|NONE> <macro> [cooldown]
+      // #HOOK THR <idx0-7> <ENTER|EXIT|BOTH|NONE> <macro> [cooldown]
+      // #HOOK LIST
+      String p = c.substring(6);
+      p.trim();
+      if (p == "LIST") {
+        Serial.println(F("=== HOOKS ==="));
+        for (uint8_t i = 0; i < NUM_GPIO; i++) {
+          if (gpioHooks[i].enabled) {
+            Serial.print(F("GPIO"));
+            Serial.print(gpioPins[i]);
+            Serial.print(F(" -> M"));
+            Serial.print(gpioHooks[i].macroId);
+            Serial.print(F(" mask="));
+            Serial.print(gpioHooks[i].modeMask, HEX);
+            Serial.print(F(" cd="));
+            Serial.println(gpioHooks[i].cooldownMs);
+          }
+        }
+        for (uint8_t i = 0; i < 8; i++) {
+          if (thresholdHooks[i].enabled) {
+            Serial.print(F("THR A"));
+            Serial.print(i + 8);
+            Serial.print(F(" -> M"));
+            Serial.print(thresholdHooks[i].macroId);
+            Serial.print(F(" mask="));
+            Serial.print(thresholdHooks[i].modeMask, HEX);
+            Serial.print(F(" cd="));
+            Serial.println(thresholdHooks[i].cooldownMs);
+          }
+        }
+      } else if (p.startsWith("GPIO ")) {
+        String rest = p.substring(5);
+        int p1 = rest.indexOf(' ');
+        int p2 = rest.indexOf(' ', p1 + 1);
+        int p3 = rest.indexOf(' ', p2 + 1);
+        if (p1 > 0 && p2 > 0) {
+          uint8_t pin = rest.substring(0, p1).toInt();
+          String type = rest.substring(p1 + 1, p2);
+          uint8_t macroId = rest.substring(p2 + 1, p3 > 0 ? p3 : rest.length()).toInt();
+          uint16_t cooldown = (p3 > 0) ? rest.substring(p3 + 1).toInt() : 300;
+          int8_t idx = -1;
+          for (uint8_t i = 0; i < NUM_GPIO; i++) if (gpioPins[i] == pin) idx = i;
+          if (idx >= 0 && macroId < MAX_MACROS) {
+            type.trim();
+            uint8_t mask = 0;
+            if (type == "RISE" || type == "RISING") mask = 0x01;
+            else if (type == "FALL" || type == "FALLING") mask = 0x02;
+            else if (type == "BOTH") mask = 0x03;
+            else if (type == "NONE") mask = 0x00;
+            gpioHooks[idx].enabled = (mask != 0);
+            gpioHooks[idx].modeMask = mask;
+            gpioHooks[idx].macroId = macroId;
+            gpioHooks[idx].cooldownMs = max((uint16_t)50, cooldown);
+            gpioHooks[idx].lastTriggerMs = 0;
+            Serial.println(F("OK:HOOK_GPIO"));
+          } else {
+            Serial.println(F("ERR:HOOK_GPIO_ARGS"));
+          }
+        }
+      } else if (p.startsWith("THR ")) {
+        String rest = p.substring(4);
+        int p1 = rest.indexOf(' ');
+        int p2 = rest.indexOf(' ', p1 + 1);
+        int p3 = rest.indexOf(' ', p2 + 1);
+        if (p1 > 0 && p2 > 0) {
+          uint8_t idx = rest.substring(0, p1).toInt();
+          String type = rest.substring(p1 + 1, p2);
+          uint8_t macroId = rest.substring(p2 + 1, p3 > 0 ? p3 : rest.length()).toInt();
+          uint16_t cooldown = (p3 > 0) ? rest.substring(p3 + 1).toInt() : 300;
+          if (idx < 8 && macroId < MAX_MACROS) {
+            type.trim();
+            uint8_t mask = 0;
+            if (type == "ENTER") mask = 0x01;
+            else if (type == "EXIT") mask = 0x02;
+            else if (type == "BOTH") mask = 0x03;
+            else if (type == "NONE") mask = 0x00;
+            thresholdHooks[idx].enabled = (mask != 0);
+            thresholdHooks[idx].modeMask = mask;
+            thresholdHooks[idx].macroId = macroId;
+            thresholdHooks[idx].cooldownMs = max((uint16_t)50, cooldown);
+            thresholdHooks[idx].lastTriggerMs = 0;
+            Serial.println(F("OK:HOOK_THR"));
+          } else {
+            Serial.println(F("ERR:HOOK_THR_ARGS"));
+          }
+        }
+      }
+
     } else if (c.startsWith("#SCROLL ")) {
       handleScroll(c.substring(8));
 
@@ -1880,7 +2653,15 @@ void processCmd(String c) {
       help();
 
     } else if (c == "#ID") {
-      Serial.println(F("COM LCD MEGA ILI9486 SPLIT TEXT"));
+      Serial.println(F("SAM SMART ARDUINO MONITOR (MEGA ILI9486)"));
+
+    } else if (c == "#VERSION") {
+      Serial.print(F("SAM_VERSION=v"));
+      Serial.println(F(SAM_FIRMWARE_VERSION));
+      Serial.print(F("BUILD="));
+      Serial.print(__DATE__);
+      Serial.print(F(" "));
+      Serial.println(__TIME__);
 
     } else if (c.startsWith("#TERM")) {
       String param = c.substring(5);
@@ -1966,7 +2747,7 @@ void processCmd(String c) {
       tft.fillScreen(0x0000);
       topPosX = topPosY = 0;
       bottomPosX = 0;
-      bottomPosY = bottomMinY;
+      bottomPosY = (viewMode == VIEW_FULL) ? 0 : bottomMinY;
       drawDivider();
       if (buttonsVisible) {
         for (uint8_t i = 0; i < NUM_BUTTONS; i++) {
@@ -2143,45 +2924,11 @@ uint16_t getColorFromName(String& n) {
 }
 
 int sendHexBytes(String hexStr) {
-  uint8_t buffer[128];
-  int byteCount = 0;
-  int startIdx = 0;
-
-  while (startIdx < hexStr.length() && byteCount < 128) {
-    while (startIdx < hexStr.length() && hexStr[startIdx] == ' ') {
-      startIdx++;
-    }
-    if (startIdx >= hexStr.length()) break;
-
-    int endIdx = startIdx;
-    while (endIdx < hexStr.length() && hexStr[endIdx] != ' ') {
-      endIdx++;
-    }
-
-    String hexByte = hexStr.substring(startIdx, endIdx);
-    hexByte.trim();
-
-    if (hexByte.startsWith("0x") || hexByte.startsWith("0X")) {
-      hexByte = hexByte.substring(2);
-    }
-
-    if (hexByte.length() > 0) {
-      long value = strtol(hexByte.c_str(), NULL, 16);
-      if (value >= 0 && value <= 255) {
-        buffer[byteCount++] = (uint8_t)value;
-      }
-    }
-    startIdx = endIdx;
-  }
-
+  uint8_t buffer[FRAME_MAX_PAYLOAD];
+  uint8_t byteCount = 0;
+  if (!parseHexBytesToBuffer(hexStr, buffer, FRAME_MAX_PAYLOAD, &byteCount)) return 0;
   HardwareSerial& fpga = getFPGA();
-  for (int i = 0; i < byteCount; i++) {
-    fpga.write(buffer[i]);
-  }
-
-  // Apply termination after sending all bytes
-  applyTermination(fpga);
-
+  sendBytesToFPGA(fpga, activeFpga, buffer, byteCount, true);
   return byteCount;
 }
 
@@ -2261,7 +3008,7 @@ void parseProg(String p) {
 }
 
 void help() {
-  Serial.println(F("=== MEGA Split Screen Commands ==="));
+  Serial.println(F("=== SAM Smart Arduino Monitor Commands ==="));
   Serial.println(F("TEXT-BASED (Easy to Use!)"));
   Serial.println();
   Serial.println(F("TOP SCREEN:"));
@@ -2297,6 +3044,16 @@ void help() {
   Serial.println(F("  #FPGASEND <text>"));
   Serial.println(F("  #FPGAPING"));
   Serial.println(F("  #FPGABYTES <hex>"));
+  Serial.println(F("  #VIEW <SPLIT|FULL|?>"));
+  Serial.println(F("  #ADDRMODE <ON|OFF|?>"));
+  Serial.println(F("  #ADDR <byte|?>"));
+  Serial.println(F("  #ADDRSEND <hex bytes>"));
+  Serial.println(F("  #FRAME <ON|OFF|?>"));
+  Serial.println(F("  #BRIDGE <ON|OFF|?>"));
+  Serial.println(F("  #WATCH START <A8..A15|GPIO> <ms>"));
+  Serial.println(F("  #WATCH STOP | #WATCH ?"));
+  Serial.println(F("  #LINKS <ON|OFF|?>"));
+  Serial.println(F("  #HEALTH | #HEALTHRESET"));
   Serial.println(F("  #FPGAREAD <bytes> [timeout]"));
   Serial.println(F("    Read N bytes from FPGA"));
   Serial.println(F("  #FPGAQUERY <hex> <expect> [timeout]"));
@@ -2337,6 +3094,7 @@ void help() {
   Serial.println(F("  #TOUCHCAL <minx> <maxx> <miny> <maxy>"));
   Serial.println(F("  #TOUCHTEST - Toggle touch test mode"));
   Serial.println(F("    Shows raw & mapped coordinates"));
+  Serial.println(F("  Touch top-right corner to toggle SPLIT/FULL"));
   Serial.println();
   Serial.println(F("GPIO (Pins 22-29):"));
   Serial.println(F("  #GPIOMODE <pin> <IN|INPU|OUT>"));
@@ -2344,6 +3102,9 @@ void help() {
   Serial.println(F("  #GPIOREAD <pin>"));
   Serial.println(F("  #GPIOREADALL - Read all pins"));
   Serial.println(F("  #GPIOEVENT <pin> <NONE|RISING|FALLING|BOTH>"));
+  Serial.println(F("  #HOOK GPIO <pin> <RISE|FALL|BOTH|NONE> <macro> [cooldown]"));
+  Serial.println(F("  #HOOK THR <0-7> <ENTER|EXIT|BOTH|NONE> <macro> [cooldown]"));
+  Serial.println(F("  #HOOK LIST"));
   Serial.println(F("  #GPIOREG - Show 8-bit register"));
   Serial.println(F("  #GPIOSET <0-255> - Set register"));
   Serial.println();
@@ -2472,6 +3233,7 @@ void help() {
   Serial.println(F("  #CLRALL - Clear both screens"));
   Serial.println(F("  #ROT <0-3> - Rotation"));
   Serial.println(F("  #ID - Device ID"));
+  Serial.println(F("  #VERSION - Firmware version/build"));
   Serial.println(F("  #HELP - This help"));
   Serial.println();
   Serial.println(F("COLORS: RED GREEN BLUE CYAN"));
@@ -3280,6 +4042,21 @@ void checkTouch() {
   Serial.print(TS_MAXY);
   Serial.println(F("]"));
 
+  // Top-right corner touch toggles SPLIT/FULL view mode
+  if (px >= (screenW - 36) && py <= 36) {
+    if (now - lastViewToggleTouch >= 500) {
+      viewMode = (viewMode == VIEW_FULL) ? VIEW_SPLIT : VIEW_FULL;
+      applyViewMode();
+      tft.fillScreen(0x0000);
+      drawDivider();
+      saveConfig();
+      lastViewToggleTouch = now;
+      Serial.print(F("OK:VIEW_"));
+      Serial.println(viewMode == VIEW_FULL ? F("FULL_TOUCH") : F("SPLIT_TOUCH"));
+    }
+    return;
+  }
+
   // Check if touch is within any button
   bool buttonHit = false;
   for (uint8_t i = 0; i < NUM_BUTTONS; i++) {
@@ -3312,14 +4089,9 @@ void checkTouch() {
       delay(50);
       drawButton(i);
 
-      // Send byte array to selected FPGA
+      // Send byte array to selected FPGA (framing aware)
       HardwareSerial& fpga = getFPGA();
-      for (uint8_t j = 0; j < btn.cmdLen; j++) {
-        fpga.write(btn.cmdBytes[j]);
-      }
-
-      // Apply termination after button bytes
-      applyTermination(fpga);
+      sendBytesToFPGA(fpga, activeFpga, btn.cmdBytes, btn.cmdLen, true);
 
       // Log to serial (show bytes in hex)
       Serial.print(F("[BTN>FPGA"));
@@ -3431,6 +4203,9 @@ void processGPIOEvents() {
     Serial.print(gpioPins[evt.pin]);
     Serial.print(F("] "));
     Serial.println(evt.rising ? F("RISING") : F("FALLING"));
+
+    gpioEventCount++;
+    triggerGPIOHook(evt.pin, evt.rising);
 
     gpioEventTail = (gpioEventTail + 1) % GPIO_EVENT_QUEUE_SIZE;
   }
@@ -5398,6 +6173,8 @@ void checkThresholds() {
       if (inAlert && !thresholds[i].alertState) {
         // Entering alert state
         thresholds[i].alertState = true;
+        thresholdEventCount++;
+        triggerThresholdHook(i, true);
 
         Serial.print(F("ALERT: A"));
         Serial.print(i + 8);
@@ -5424,6 +6201,8 @@ void checkThresholds() {
       } else if (!inAlert && thresholds[i].alertState) {
         // Leaving alert state
         thresholds[i].alertState = false;
+        thresholdEventCount++;
+        triggerThresholdHook(i, false);
 
         Serial.print(F("CLEAR: A"));
         Serial.print(i + 8);
@@ -5559,19 +6338,7 @@ void handleMacroRun(String params) {
   Serial.print(F("MACRO_RUN: ID="));
   Serial.println(id);
 
-  // Execute each command in sequence
-  for (uint8_t i = 0; i < macros[id].cmdCount; i++) {
-    Serial.print(F("  ["));
-    Serial.print(i + 1);
-    Serial.print(F("/"));
-    Serial.print(macros[id].cmdCount);
-    Serial.print(F("] "));
-    Serial.println(macros[id].commands[i]);
-
-    processCmd(macros[id].commands[i]);
-    delay(50);  // Small delay between commands
-  }
-
+  runMacroSafe((uint8_t)id, F("MANUAL"));
   Serial.println(F("MACRO_DONE"));
 }
 
