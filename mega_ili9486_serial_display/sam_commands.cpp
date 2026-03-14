@@ -530,14 +530,17 @@ void processCmd(String c) {
   }
 
   if (c.startsWith("#")) {
-    c.toUpperCase();
-
-    if (c.startsWith("#TEXT ")) {
+    // Handle #TEXT before toUpperCase() to preserve original case
+    if (c.length() > 6 && (c.substring(0,6).equalsIgnoreCase("#TEXT "))) {
       char buf[64];
       c.substring(6).toCharArray(buf, sizeof(buf));
       showText(buf);
+      return;
+    }
 
-    } else if (c == "#CLEAR" || c == "#CLR") {
+    c.toUpperCase();
+
+    if (c == "#CLEAR" || c == "#CLR") {
       tft.fillRect(0, 0, screenW, topMaxY, 0x0000);
       topPosX = topPosY = 0;
       drawDivider();

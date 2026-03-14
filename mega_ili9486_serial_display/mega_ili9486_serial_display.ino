@@ -383,9 +383,8 @@ void serialEvent() {
 
         if (startPos > 0) {
           cmd = cmd.substring(startPos);
-        } else if (startPos < 0) {
-          cmd = "";
         }
+        // startPos < 0 means no # or >>> — pass plain text through to showText
       }
       if (cmd.length() > 0) cmdReady = true;
     } else {
