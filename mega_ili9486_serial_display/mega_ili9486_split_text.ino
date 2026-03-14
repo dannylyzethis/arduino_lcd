@@ -459,6 +459,8 @@ uint8_t smartProfile = PROFILE_CUSTOM;
 bool wdtEnabled = false;
 uint16_t wdtTimeoutMs = 1000;
 uint8_t bootResetCause = 0;
+char lastWhy[40] = "BOOT";
+unsigned long lastWhyMs = 0;
 
 #define ESC_METRIC_ERR 0x01
 #define ESC_METRIC_TIMEOUT 0x02
@@ -1124,6 +1126,7 @@ void fireEscalation(unsigned long dErr, unsigned long dTo, unsigned long dRule) 
   char msg[EVENT_LOG_MSG_LEN];
   snprintf(msg, sizeof(msg), "ESC dE=%lu dT=%lu dR=%lu", dErr, dTo, dRule);
   addEventLogC(EVLOG_ERR, msg);
+  setWhy(msg);
 
   if (escalation.action == RULE_ACT_MACRO) {
     runMacroSafe(escalation.actionArg, F("ESC"));
@@ -1214,6 +1217,7 @@ void exitFailsafe() {
   failsafe.lastEscTotal = escalation.fireCount;
   failsafe.lastEvalMs = millis();
   addEventLogC(EVLOG_INFO, "SAFE EXIT");
+  setWhy("SAFE EXIT");
   Serial.println(F("SAFE:EXIT"));
 }
 
@@ -1234,6 +1238,7 @@ void enterFailsafe(unsigned long dErr, unsigned long dTo, unsigned long dEsc) {
   char em[EVENT_LOG_MSG_LEN];
   snprintf(em, sizeof(em), "SAFE e%lu t%lu s%lu", dErr, dTo, dEsc);
   addEventLogC(EVLOG_ERR, em);
+  setWhy(em);
   showTextBottom("SAFE MODE ACTIVE");
   Serial.print(F("SAFE:ENTER "));
   Serial.println(em);
@@ -1438,6 +1443,13 @@ void addEventLogC(uint8_t type, const char* msg) {
   if (eventLogCount < EVENT_LOG_CAPACITY) eventLogCount++;
 }
 
+void setWhy(const char* msg) {
+  if (!msg) return;
+  strncpy(lastWhy, msg, sizeof(lastWhy) - 1);
+  lastWhy[sizeof(lastWhy) - 1] = '\0';
+  lastWhyMs = millis();
+}
+
 int8_t parseEventTypeFilter(String s) {
   s.trim();
   s.toUpperCase();
@@ -1507,6 +1519,7 @@ void triggerRuleAction(uint8_t ruleId, SmartRule& r, int16_t valueNow) {
   char em[EVENT_LOG_MSG_LEN];
   snprintf(em, sizeof(em), "R%u v=%d", ruleId, valueNow);
   addEventLogC(EVLOG_RULE, em);
+  setWhy(em);
 }
 
 void evaluateRules() {
@@ -1777,6 +1790,7 @@ void setup() {
   Serial.println(F("Type #HELP for commands"));
   Serial.println(F("#SHOWBTNS for touch buttons"));
   Serial.println(F("READY"));
+  setWhy("READY");
 }
 
 void loop() {
@@ -2332,6 +2346,7 @@ void readFPGAResponse(uint8_t numBytes, uint16_t timeout) {
     char em[EVENT_LOG_MSG_LEN];
     snprintf(em, sizeof(em), "F%u TIMEOUT", activeFpga);
     addEventLogC(EVLOG_ERR, em);
+    setWhy(em);
     Serial.println(F("TIMEOUT"));
     showTextBottom("FPGA: TIMEOUT");
     return;
@@ -2820,6 +2835,12 @@ void processCmd(String c) {
 
     } else if (c == "#SUMMARY") {
       printSmartSummary();
+
+    } else if (c == "#WHY") {
+      Serial.print(F("WHY["));
+      Serial.print(lastWhyMs);
+      Serial.print(F("ms] "));
+      Serial.println(lastWhy);
 
     } else if (c.startsWith("#PROFILE ")) {
       String param = c.substring(9);
@@ -4248,6 +4269,7 @@ void help() {
   Serial.println(F("  #LINKS <ON|OFF|?> (alias)"));
   Serial.println(F("  #PROFILE <SAFE|BALANCED|PERF|CUSTOM|?>"));
   Serial.println(F("  #SUMMARY"));
+  Serial.println(F("  #WHY"));
   Serial.println(F("  #ESC <ON|OFF|?|RESET>"));
   Serial.println(F("  #ESC SET <ERR|TIMEOUT|RULE|ALL> <threshold> <window_ms> <LOG|ALERT|MACRO n>"));
   Serial.println(F("  #SAFE <ON|OFF|?|CLEAR>"));
@@ -5438,6 +5460,7 @@ void processGPIOEvents() {
     Serial.println(evt.rising ? F("RISING") : F("FALLING"));
 
     addEventLog(EVLOG_GPIO, msg);
+    setWhy(msg.c_str());
     gpioEventCount++;
     triggerGPIOHook(evt.pin, evt.rising);
 
@@ -7422,6 +7445,7 @@ void checkThresholds() {
         char em[EVENT_LOG_MSG_LEN];
         snprintf(em, sizeof(em), "A%u ENTER %u", i + 8, val);
         addEventLogC(EVLOG_THR, em);
+        setWhy(em);
 
         Serial.print(F("ALERT: A"));
         Serial.print(i + 8);
@@ -7453,6 +7477,7 @@ void checkThresholds() {
         char em[EVENT_LOG_MSG_LEN];
         snprintf(em, sizeof(em), "A%u EXIT %u", i + 8, val);
         addEventLogC(EVLOG_THR, em);
+        setWhy(em);
 
         Serial.print(F("CLEAR: A"));
         Serial.print(i + 8);
