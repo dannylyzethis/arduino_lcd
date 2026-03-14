@@ -56,7 +56,7 @@ void triggerRuleAction(uint8_t ruleId, SmartRule& r, int16_t valueNow) {
   } else {
     char msg[28];
     snprintf(msg, sizeof(msg), "RULE%u ALERT %d", ruleId, valueNow);
-    showTextBottom(String(msg));
+    showTextBottom(msg);
     Serial.print(F("RULE_ALERT #"));
     Serial.print(ruleId);
     Serial.print(F(" val="));

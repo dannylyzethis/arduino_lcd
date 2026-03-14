@@ -58,7 +58,7 @@ void processGPIOEvents() {
     String msg = "GPIO";
     msg += gpioPins[evt.pin];
     msg += evt.rising ? " RISE" : " FALL";
-    showTextBottom(msg);
+    showTextBottom(msg.c_str());
 
     Serial.print(F("[GPIO"));
     Serial.print(gpioPins[evt.pin]);

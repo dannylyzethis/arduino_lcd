@@ -49,7 +49,7 @@ void updateWatch() {
       msg += "INVALID_SRC";
     }
   }
-  showTextBottom(msg);
+  showTextBottom(msg.c_str());
 }
 
 // ---------------------------------------------------------------------------
@@ -532,7 +532,12 @@ void processCmd(String c) {
   if (c.startsWith("#")) {
     c.toUpperCase();
 
-    if (c == "#CLEAR" || c == "#CLR") {
+    if (c.startsWith("#TEXT ")) {
+      char buf[64];
+      c.substring(6).toCharArray(buf, sizeof(buf));
+      showText(buf);
+
+    } else if (c == "#CLEAR" || c == "#CLR") {
       tft.fillRect(0, 0, screenW, topMaxY, 0x0000);
       topPosX = topPosY = 0;
       drawDivider();
@@ -1464,7 +1469,8 @@ void processCmd(String c) {
       Serial.println(F(" bytes"));
 
       // Show TX on LCD bottom
-      showTextBottom("TX: " + hexData);
+      String txMsg = "TX: " + hexData;
+      showTextBottom(txMsg.c_str());
 
     } else if (c.startsWith("#FPGAREAD ")) {
       // #FPGAREAD <num_bytes> [timeout_ms]
@@ -2138,6 +2144,6 @@ void processCmd(String c) {
       Serial.println(c);
     }
   } else {
-    showText(c);
+    showText(c.c_str());
   }
 }

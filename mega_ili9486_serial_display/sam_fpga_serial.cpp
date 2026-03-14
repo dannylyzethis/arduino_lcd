@@ -133,7 +133,7 @@ void readFPGAResponse(uint8_t numBytes, uint16_t timeout) {
       hexStr += String(buffer[i], HEX);
     }
     Serial.println();
-    showTextBottom(hexStr);
+    showTextBottom(hexStr.c_str());
 
   } else {
     // Text mode: show as characters
@@ -154,7 +154,7 @@ void readFPGAResponse(uint8_t numBytes, uint16_t timeout) {
       }
     }
     Serial.println();
-    showTextBottom(textStr);
+    showTextBottom(textStr.c_str());
   }
 
   Serial.print(F("("));
@@ -332,7 +332,7 @@ void checkFPGASerial(HardwareSerial& serial, uint8_t id) {
               fpgaBuffer += byteStr;
             } else {
               // Buffer full, display and start new line
-              showTextBottom(fpgaBuffer);
+              showTextBottom(fpgaBuffer.c_str());
               fpgaBuffer = byteStr;
             }
 
@@ -341,7 +341,7 @@ void checkFPGASerial(HardwareSerial& serial, uint8_t id) {
             byteCount++;
             if (byteCount >= 10) {
               if (fpgaBuffer.length() > 0) {
-                showTextBottom(fpgaBuffer);
+                showTextBottom(fpgaBuffer.c_str());
                 fpgaBuffer = "";
               }
               byteCount = 0;
@@ -354,14 +354,14 @@ void checkFPGASerial(HardwareSerial& serial, uint8_t id) {
 
             if (c == '\n' || c == '\r') {
               if (fpgaBuffer.length() > 0) {
-                showTextBottom(fpgaBuffer);
+                showTextBottom(fpgaBuffer.c_str());
                 fpgaBuffer = "";
               }
             } else if (isPrintable(c)) {
               if (fpgaBuffer.length() < 180) {
                 fpgaBuffer += c;
               } else {
-                showTextBottom(fpgaBuffer);
+                showTextBottom(fpgaBuffer.c_str());
                 fpgaBuffer = "";
                 fpgaBuffer += c;
               }
@@ -433,7 +433,7 @@ void checkFPGASerial(HardwareSerial& serial, uint8_t id) {
         fpgaBuffer += byteStr;
       } else {
         // Buffer full, display and start new line
-        showTextBottom(fpgaBuffer);
+        showTextBottom(fpgaBuffer.c_str());
         fpgaBuffer = byteStr;
       }
 
@@ -442,7 +442,7 @@ void checkFPGASerial(HardwareSerial& serial, uint8_t id) {
       byteCount++;
       if (byteCount >= 10) {
         if (fpgaBuffer.length() > 0) {
-          showTextBottom(fpgaBuffer);
+          showTextBottom(fpgaBuffer.c_str());
           fpgaBuffer = "";
         }
         byteCount = 0;
@@ -455,14 +455,14 @@ void checkFPGASerial(HardwareSerial& serial, uint8_t id) {
 
       if (c == '\n' || c == '\r') {
         if (fpgaBuffer.length() > 0) {
-          showTextBottom(fpgaBuffer);
+          showTextBottom(fpgaBuffer.c_str());
           fpgaBuffer = "";
         }
       } else if (isPrintable(c)) {
         if (fpgaBuffer.length() < 180) {
           fpgaBuffer += c;
         } else {
-          showTextBottom(fpgaBuffer);
+          showTextBottom(fpgaBuffer.c_str());
           fpgaBuffer = "";
           fpgaBuffer += c;
         }

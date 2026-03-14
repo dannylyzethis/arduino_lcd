@@ -26,9 +26,12 @@ uint16_t getLinesBottom(const String& txt) {
   return (len + charsPerLine - 1) / charsPerLine;
 }
 
-void showText(const String& txt) {
-  uint16_t lines = getLines(txt);
+void showText(const char* txt) {
+  uint16_t len = strlen(txt);
   uint16_t lineH = BASE_CHAR_H * topTextSize;
+  uint16_t charsPerLine = screenW / (BASE_CHAR_W * topTextSize);
+  if (charsPerLine == 0) charsPerLine = 1;
+  uint16_t lines = len > 0 ? (len + charsPerLine - 1) / charsPerLine : 1;
   uint16_t needH = lines * lineH;
 
   if (topPosY + needH > topMaxY) {
@@ -44,39 +47,35 @@ void showText(const String& txt) {
   }
   tft.setCursor(topPosX, topPosY);
 
-  uint16_t charsPerLine = screenW / (BASE_CHAR_W * topTextSize);
-  if (charsPerLine == 0) charsPerLine = 1;
-
-  if (txt.length() > charsPerLine) {
-    int start = 0;
-    while (start < txt.length()) {
-      int end = min(start + charsPerLine, (int)txt.length());
-      tft.print(txt.substring(start, end));
-      start = end;
-      if (start < txt.length()) {
-        topPosY += lineH;
-        if (topPosY >= topMaxY) break;
-        tft.setCursor(0, topPosY);
-      }
+  uint16_t col = 0;
+  for (uint16_t i = 0; i < len; i++) {
+    tft.print(txt[i]);
+    col++;
+    if (col >= charsPerLine && i < len - 1) {
+      col = 0;
+      topPosY += lineH;
+      if (topPosY >= topMaxY) break;
+      tft.setCursor(0, topPosY);
     }
-    tft.println();
-  } else {
-    tft.println(txt);
   }
+  tft.println();
 
   topPosY = tft.getCursorY();
   if (topPosY >= topMaxY) topPosY = 0;
   topPosX = 0;
 }
 
-void showTextBottom(const String& txt) {
+void showTextBottom(const char* txt) {
   if (viewMode == VIEW_FULL) {
     showText(txt);
     return;
   }
 
-  uint16_t lines = getLinesBottom(txt);
+  uint16_t len = strlen(txt);
   uint16_t lineH = BASE_CHAR_H * bottomTextSize;
+  uint16_t charsPerLine = screenW / (BASE_CHAR_W * bottomTextSize);
+  if (charsPerLine == 0) charsPerLine = 1;
+  uint16_t lines = len > 0 ? (len + charsPerLine - 1) / charsPerLine : 1;
   uint16_t needH = lines * lineH;
 
   if (bottomPosY + needH > bottomMaxY) {
@@ -92,25 +91,18 @@ void showTextBottom(const String& txt) {
   }
   tft.setCursor(bottomPosX, bottomPosY);
 
-  uint16_t charsPerLine = screenW / (BASE_CHAR_W * bottomTextSize);
-  if (charsPerLine == 0) charsPerLine = 1;
-
-  if (txt.length() > charsPerLine) {
-    int start = 0;
-    while (start < txt.length()) {
-      int end = min(start + charsPerLine, (int)txt.length());
-      tft.print(txt.substring(start, end));
-      start = end;
-      if (start < txt.length()) {
-        bottomPosY += lineH;
-        if (bottomPosY >= bottomMaxY) break;
-        tft.setCursor(0, bottomPosY);
-      }
+  uint16_t col = 0;
+  for (uint16_t i = 0; i < len; i++) {
+    tft.print(txt[i]);
+    col++;
+    if (col >= charsPerLine && i < len - 1) {
+      col = 0;
+      bottomPosY += lineH;
+      if (bottomPosY >= bottomMaxY) break;
+      tft.setCursor(0, bottomPosY);
     }
-    tft.println();
-  } else {
-    tft.println(txt);
   }
+  tft.println();
 
   bottomPosY = tft.getCursorY();
   if (bottomPosY >= bottomMaxY) bottomPosY = bottomMinY;

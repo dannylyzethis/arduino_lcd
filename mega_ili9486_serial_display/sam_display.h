@@ -6,8 +6,8 @@
 void drawDivider();
 uint16_t getLines(const String& txt);
 uint16_t getLinesBottom(const String& txt);
-void showText(const String& txt);
-void showTextBottom(const String& txt);
+void showText(const char* txt);
+void showTextBottom(const char* txt);
 void applyViewMode();
 void clearLinkIndicators();
 void drawLinkIndicators();

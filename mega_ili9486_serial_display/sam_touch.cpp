@@ -301,7 +301,7 @@ void checkTouch() {
       Serial.println();
 
       String msg = "TX: " + hexDisplay;
-      showTextBottom(msg);
+      showTextBottom(msg.c_str());
 
       break;
     } else {

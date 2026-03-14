@@ -170,7 +170,7 @@ void fireEscalation(unsigned long dErr, unsigned long dTo, unsigned long dRule) 
   } else {
     String lcdMsg = "ESCALATE ";
     lcdMsg += msg;
-    showTextBottom(lcdMsg);
+    showTextBottom(lcdMsg.c_str());
     Serial.print(F("ESCALATE:ALERT "));
     Serial.println(msg);
   }
