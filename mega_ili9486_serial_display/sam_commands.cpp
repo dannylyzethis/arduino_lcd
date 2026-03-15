@@ -490,8 +490,8 @@ void help() {
   Serial.println(F("  Example: #BTNCONFIG UP 3 0xAA 0xBB 0xCC"));
   Serial.println();
   Serial.println(F("FPGA EEPROM ZONE (100-299):"));
-  Serial.println(F("  #FPGAWRITE <addr> <bytes...>"));
-  Serial.println(F("  #FPGAREAD <addr> [count]"));
+  Serial.println(F("  #FPGAZWRITE <addr> <bytes...>"));
+  Serial.println(F("  #FPGAZREAD <addr> [count]"));
   Serial.println(F("  200 bytes for FPGA data exchange"));
   Serial.println();
   Serial.println(F("OTHER:"));
@@ -1479,7 +1479,15 @@ void processCmd(String c) {
       // #FPGAREAD <num_bytes> [timeout_ms]
       // Read expected number of bytes from FPGA with optional timeout
       int sp = c.indexOf(' ', 10);
-      uint8_t numBytes = c.substring(10, sp > 0 ? sp : c.length()).toInt();
+      String firstArg = c.substring(10, sp > 0 ? sp : c.length());
+      firstArg.trim();
+      int firstVal = firstArg.toInt();
+      if (firstVal >= ADDR_FPGA_ZONE) {
+        Serial.println(F("ERR:FPGAREAD_EEPROM_DEPRECATED"));
+        Serial.println(F("USE:#FPGAZREAD <addr> [count]"));
+        return;
+      }
+      uint8_t numBytes = (uint8_t)firstVal;
       uint16_t timeout = 1000;  // Default 1 second
 
       if (sp > 0) {
@@ -1922,11 +1930,11 @@ void processCmd(String c) {
     } else if (c.startsWith("#BTNCONFIG ")) {
       handleBtnConfig(c.substring(11));
 
-    } else if (c.startsWith("#FPGAWRITE ")) {
-      handleFPGAWrite(c.substring(11));
+    } else if (c.startsWith("#FPGAZWRITE ")) {
+      handleFPGAWrite(c.substring(12));
 
-    } else if (c.startsWith("#FPGAREAD ")) {
-      handleFPGARead(c.substring(10));
+    } else if (c.startsWith("#FPGAZREAD ")) {
+      handleFPGARead(c.substring(11));
 
     } else if (c == "#HELP") {
       help();

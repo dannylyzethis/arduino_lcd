@@ -190,8 +190,8 @@ Notes:
 - `#CONFIGSHOW`
 - `#BTNCONFIG <btn> <len> <bytes...>`
 - `#BTNCONFIG <btn> ?`
-- `#FPGAWRITE <addr> <bytes...>`
-- `#FPGAREAD <addr> [count]`
+- `#FPGAZWRITE <addr> <bytes...>` (EEPROM FPGA zone 100-299)
+- `#FPGAZREAD <addr> [count]` (EEPROM FPGA zone 100-299)
 - `#MEMINFO`
 - `#UPTIME`
 - `#BENCHMARK`
@@ -199,5 +199,7 @@ Notes:
 ## Compatibility Notes
 
 - New smart/protocol features default to conservative behavior where applicable.
-- `#FPGAREAD` appears in both serial-read and direct-address contexts in help output; usage is parameter-shape dependent.
+- `#FPGAREAD` is reserved for live serial reads (`<bytes> [timeout]`).
+- EEPROM FPGA-zone access uses `#FPGAZREAD/#FPGAZWRITE`.
+- Legacy EEPROM-form `#FPGAREAD <addr> [count]` is deprecated.
 - Command outputs include `OK:` and `ERR:` prefixed statuses used by scripts/automation.
